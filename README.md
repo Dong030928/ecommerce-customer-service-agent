@@ -2,17 +2,19 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.1.0
+## v0.2.0
 
 当前版本提供：
 
 - FastAPI 服务与 `POST /chat`；
 - OpenAI-compatible 聊天模型调用；
 - `session_id` 和可信 Runtime Context 接入；
+- 受控的电商客服身份与业务事实边界；
+- 可公开展示的 `reasoning_summary` 执行摘要；
 - `/health` 与 `/capabilities`；
 - 模型配置错误的显式 `503` 边界。
 
-当前版本暂不提供 RAG、业务工具、多轮记忆、工作流、人工审批和评测。
+当前版本能生成客服话术，但尚无活动规则、订单物流和退款政策等可信业务来源，也暂不提供 RAG、业务工具、多轮记忆、工作流、人工审批和评测。
 
 ## 项目结构
 

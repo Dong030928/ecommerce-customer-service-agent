@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+ReasoningView = Literal["default", "off", "summary", "teaching"]
 
 
 class ChatRequest(BaseModel):
@@ -17,6 +20,8 @@ class ChatRequest(BaseModel):
     runtime_member_level: str | None = Field(default=None, description="可信调用方确认的会员等级")
     runtime_risk_level: str | None = Field(default=None, description="可信调用方确认的风险等级")
     user_message: str = Field(..., description="用户输入的问题")
+    reasoning_view: ReasoningView = "default"
+    debug: bool = True
     runtime_context: dict[str, Any] | None = None
 
 
@@ -25,4 +30,5 @@ class ChatResponse(BaseModel):
 
     session_id: str
     answer: str
+    reasoning_summary: list[str]
     session_state: dict[str, Any]

@@ -10,14 +10,14 @@ from config.settings import api_key_is_missing, load_project_env
 
 
 def call_chat_model(
-    user_message: str,
+    messages: list[dict[str, str]],
     *,
     http_client: httpx.Client | None = None,
     api_key: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
 ) -> str:
-    """Call an OpenAI-compatible chat completion endpoint."""
+    """Send controlled customer-service messages to an OpenAI-compatible model."""
 
     load_project_env()
     resolved_api_key = api_key if api_key is not None else os.getenv("AGENT_OPENAI_API_KEY")
@@ -32,19 +32,7 @@ def call_chat_model(
         "headers": {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"},
         "json": {
             "model": resolved_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是电商平台的客服 Agent。当前版本只负责普通聊天，"
-                        "不能承诺优惠、退款、物流或售后处理结果。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": user_message,
-                },
-            ],
+            "messages": messages,
         },
     }
     if http_client is not None:
