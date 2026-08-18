@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.2.0
+## v0.3.0
 
 当前版本提供：
 
@@ -10,11 +10,14 @@
 - OpenAI-compatible 聊天模型调用；
 - `session_id` 和可信 Runtime Context 接入；
 - 受控的电商客服身份与业务事实边界；
+- 规则优先、轻量分类模型兜底的结构化意图识别；
+- 稳定的 `intent_result`（意图、来源、置信度、命中词和说明）；
+- 基于结构化意图和服务边界生成最终客服回复；
 - 可公开展示的 `reasoning_summary` 执行摘要；
 - `/health` 与 `/capabilities`；
-- 模型配置错误的显式 `503` 边界。
+- 模型缺失或调用失败时的安全话术回退。
 
-当前版本能生成客服话术，但尚无活动规则、订单物流和退款政策等可信业务来源，也暂不提供 RAG、业务工具、多轮记忆、工作流、人工审批和评测。
+当前版本能识别粗粒度客服意图并生成受约束话术，但意图分类不等于业务动作已经执行。系统尚无活动规则、订单物流和退款政策等可信业务来源，也暂不提供 RAG、业务工具、多轮记忆、工作流、人工审批和评测。
 
 ## 项目结构
 
@@ -59,6 +62,21 @@ Set-Location backend
   "runtime_member_level": "gold",
   "runtime_risk_level": "low",
   "user_message": "你好，请介绍一下你能做什么"
+}
+```
+
+响应中的核心结构化字段示例：
+
+```json
+{
+  "intent": "refund_request",
+  "intent_result": {
+    "intent": "refund_request",
+    "source": "rules",
+    "confidence": 0.95,
+    "matched_keywords": ["退款"],
+    "explanation": "用户在询问退款、退货或质量问题，规则高置信标记为售后退款类消息。"
+  }
 }
 ```
 

@@ -19,7 +19,7 @@ def create_router(agent_provider: Any) -> APIRouter:
     def health() -> dict[str, str]:
         """Return service health and the current project version."""
 
-        return {"status": "ok", "version": "0.2.0"}
+        return {"status": "ok", "version": "0.3.0"}
 
     @router.get("/capabilities")
     def capabilities() -> dict[str, Any]:

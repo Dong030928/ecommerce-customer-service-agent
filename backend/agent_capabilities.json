@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.2.0-llm-customer-boundary",
-    "title": "LLM Customer Service Boundary",
-    "summary": "当前版本以受控客服身份回答用户问题，并明确尚未接入可验证业务事实。"
+    "id": "v0.3.0-structured-intent",
+    "title": "Structured Intent Classification",
+    "summary": "当前版本通过规则优先、轻量模型兜底返回稳定的结构化意图，并据此生成受边界约束的客服回复。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "endpoints": {
     "health": true,
@@ -21,7 +21,9 @@
     "runtime_context": true,
     "reasoning_summary": true,
     "reasoning_content": false,
-    "structured_intent": false,
+    "real_llm_answer": true,
+    "grounded_model_answer": true,
+    "structured_intent": true,
     "rag_citations": false,
     "tool_calls": false,
     "workflow": false,
@@ -34,7 +36,6 @@
   },
   "disabled_reasons": {
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
-    "structured_intent": "当前版本还没有开放结构化意图识别。",
     "rag_citations": "RAG 和引用来源还没有接入。",
     "tool_calls": "业务工具还没有接入。",
     "workflow": "售后工作流还没有接入。",
