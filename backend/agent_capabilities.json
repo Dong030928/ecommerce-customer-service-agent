@@ -1,0 +1,49 @@
+{
+  "schema_version": "agent_capabilities_v1",
+  "release": {
+    "id": "v0.1.0-minimal-chat-service",
+    "title": "Minimal Agent Chat Service",
+    "summary": "首个版本只开放 /chat、可信运行时身份字段和最小响应格式。"
+  },
+  "agent": {
+    "name": "E-commerce Customer Service Agent",
+    "version": "0.1.0"
+  },
+  "endpoints": {
+    "health": true,
+    "chat": true,
+    "chat_resume": false,
+    "trace": false,
+    "eval_run": false
+  },
+  "features": {
+    "chat": true,
+    "runtime_context": true,
+    "reasoning_summary": false,
+    "reasoning_content": false,
+    "structured_intent": false,
+    "rag_citations": false,
+    "tool_calls": false,
+    "workflow": false,
+    "human_approval": false,
+    "memory": false,
+    "hooks": false,
+    "trace": false,
+    "evaluation": false,
+    "cost_summary": false
+  },
+  "disabled_reasons": {
+    "reasoning_summary": "当前版本只开放最小 /chat 接入，公开执行摘要将在后续版本加入。",
+    "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
+    "structured_intent": "当前版本还没有开放结构化意图识别。",
+    "rag_citations": "RAG 和引用来源还没有接入。",
+    "tool_calls": "业务工具还没有接入。",
+    "workflow": "售后工作流还没有接入。",
+    "human_approval": "HITL 人工确认还没有接入。",
+    "memory": "多轮记忆还没有接入。",
+    "hooks": "Hooks 治理还没有接入。",
+    "trace": "Trace 公开轨迹还没有接入。",
+    "evaluation": "Evaluation 回归评测将在后续版本接入。",
+    "cost_summary": "成本统计还没有接入。"
+  }
+}
