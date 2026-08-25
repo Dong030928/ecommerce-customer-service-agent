@@ -7,8 +7,14 @@ import re
 import httpx
 
 from api.schemas import ChatRequest, ChatResponse, Intent, IntentResult
-from models.answer_client import compose_grounded_answer
 from models.classifier_client import classify_intent_with_model
+from models.llm_client import call_chat_model
+from prompts.loader import (
+    FULL_POLICY_DOCUMENTS,
+    build_full_context_messages,
+    detect_context_conflicts,
+    estimate_tokens,
+)
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -230,11 +236,18 @@ class CustomerServiceAgent:
             base_url=self._classifier_base_url,
             model=self._classifier_model_name,
         )
+        conflicts = detect_context_conflicts(request.user_message)
+        messages = build_full_context_messages(
+            request,
+            intent_result,
+            FULL_POLICY_DOCUMENTS,
+            conflicts,
+        )
+        prompt_text = "\n".join(message["content"] for message in messages)
         fallback_answer = build_answer(intent_result)
-        model_answer = compose_grounded_answer(
-            user_message=request.user_message,
-            deterministic_answer=fallback_answer,
-            intent_result=intent_result,
+        model_answer = call_chat_model(
+            messages,
+            fallback_answer=fallback_answer,
             http_client=self._answer_http_client,
             api_key=self._answer_api_key,
             base_url=self._answer_base_url,
@@ -242,12 +255,13 @@ class CustomerServiceAgent:
         )
         reasoning_summary = [
             "后端接收 ChatRequest，保持 user_message 与可信 runtime_* 分离。",
-            "系统采用高置信规则优先、轻量分类模型兜底，生成稳定的粗粒度 intent。",
-            "分类结果只用于消息分拣，不代表售后操作已经执行。",
-            "IntentResult 经过 Pydantic 校验后才进入 ChatResponse。",
+            "系统沿用规则优先、轻量分类模型兜底，先得到稳定的粗粒度 intent。",
+            "system prompt 声明客服身份、事实优先级和高风险回答边界。",
+            f"当前版本将 {len(FULL_POLICY_DOCUMENTS)} 份规则文档全量注入 Prompt。",
+            f"本轮发现 {len(conflicts)} 条上下文冲突线索，但不把它当成自动裁决结果。",
         ]
         session_state = {
-            "agent_version": "0.3.0",
+            "agent_version": "0.4.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -257,7 +271,26 @@ class CustomerServiceAgent:
                 "page_context": request.runtime_context or {},
             },
             "model_answer": model_answer.model_dump(),
-            "next_gap": "系统知道消息大类，但还没有业务工具或工作流来决定并执行下一步动作。",
+            "prompt_boundary": {
+                "mode": "system_prompt_fact_priority_and_refusal_rules",
+                "fact_priority": [
+                    "runtime_facts",
+                    "current_policy_documents",
+                    "legacy_documents",
+                    "user_claims",
+                    "model_general_knowledge",
+                ],
+                "boundary_rule_count": 4,
+            },
+            "prompt_context": {
+                "mode": "full_document_injection",
+                "document_count": len(FULL_POLICY_DOCUMENTS),
+                "document_ids": [document.doc_id for document in FULL_POLICY_DOCUMENTS],
+                "estimated_prompt_tokens": estimate_tokens(prompt_text),
+                "conflict_count": len(conflicts),
+                "conflicts": [conflict.model_dump() for conflict in conflicts],
+            },
+            "next_gap": "全量 Prompt 能让规则进入模型，但上下文会持续变长，新旧规则也可能互相干扰。",
         }
         return ChatResponse(
             session_id=request.session_id,

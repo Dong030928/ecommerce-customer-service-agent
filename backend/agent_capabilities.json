@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.3.0-structured-intent",
-    "title": "Structured Intent Classification",
-    "summary": "当前版本通过规则优先、轻量模型兜底返回稳定的结构化意图，并据此生成受边界约束的客服回复。"
+    "id": "v0.4.0-prompt-boundary",
+    "title": "Prompt Boundary And Full Context",
+    "summary": "当前版本通过 system prompt 声明事实优先级和回答边界，并全量注入规则文档以观察长上下文与新旧规则冲突。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "endpoints": {
     "health": true,
@@ -24,6 +24,8 @@
     "real_llm_answer": true,
     "grounded_model_answer": true,
     "structured_intent": true,
+    "prompt_boundary": true,
+    "full_prompt_context": true,
     "rag_citations": false,
     "tool_calls": false,
     "workflow": false,
@@ -36,7 +38,7 @@
   },
   "disabled_reasons": {
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
-    "rag_citations": "RAG 和引用来源还没有接入。",
+    "rag_citations": "当前版本只做全量 Prompt 注入，还没有 RAG 检索和引用。",
     "tool_calls": "业务工具还没有接入。",
     "workflow": "售后工作流还没有接入。",
     "human_approval": "HITL 人工确认还没有接入。",

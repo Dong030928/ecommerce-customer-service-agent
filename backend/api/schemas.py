@@ -45,6 +45,25 @@ class IntentResult(BaseModel):
     explanation: str
 
 
+class PolicyDocument(BaseModel):
+    """Policy document deliberately injected into the full prompt context."""
+
+    doc_id: str
+    title: str
+    status: Literal["current", "legacy", "draft"]
+    keywords: list[str]
+    body: str
+
+
+class ContextConflict(BaseModel):
+    """Observable conflict signal, not an automatic policy decision."""
+
+    topic: str
+    newer_doc_id: str
+    older_doc_id: str
+    reason: str
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
