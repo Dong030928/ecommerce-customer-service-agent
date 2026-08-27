@@ -7,13 +7,14 @@ import re
 import httpx
 
 from api.schemas import ChatRequest, ChatResponse, Intent, IntentResult
+from config.settings import RAG_TOP_K
 from cost.observer import build_cost_summary
 from models.classifier_client import classify_intent_with_model
 from models.llm_client import call_chat_model
-from prompts.loader import (
-    load_prompt_registry,
-    render_prompt_template,
-    select_prompt_fragments,
+from rag.knowledge_base import (
+    load_knowledge_snippets,
+    render_rag_messages,
+    retrieve_relevant_knowledge,
 )
 
 
@@ -197,6 +198,17 @@ def build_answer(intent_result: IntentResult) -> str:
     return answers[intent_result.intent]
 
 
+def build_rag_fallback(intent_result: IntentResult, retrieved_count: int) -> str:
+    """Fail closed when retrieval completed but answer generation is unavailable."""
+
+    if retrieved_count:
+        return (
+            f"我已为这条{intent_result.intent}问题找到 {retrieved_count} 条相关知识，"
+            "但当前无法调用回答模型，不能据此直接承诺业务结果。"
+        )
+    return build_answer(intent_result)
+
+
 class CustomerServiceAgent:
     """Customer-service agent with structured intent and answer boundaries."""
 
@@ -237,10 +249,14 @@ class CustomerServiceAgent:
             base_url=self._classifier_base_url,
             model=self._classifier_model_name,
         )
-        registry = load_prompt_registry()
-        fragments = select_prompt_fragments(intent_result.intent, registry)
-        messages = render_prompt_template(request, intent_result, fragments)
-        fallback_answer = build_answer(intent_result)
+        snippets = load_knowledge_snippets()
+        hits = retrieve_relevant_knowledge(
+            request.user_message,
+            intent_result.intent,
+            snippets=snippets,
+        )
+        messages = render_rag_messages(request, intent_result, hits)
+        fallback_answer = build_rag_fallback(intent_result, len(hits))
         model_answer = call_chat_model(
             messages,
             fallback_answer=fallback_answer,
@@ -257,19 +273,19 @@ class CustomerServiceAgent:
         event = {
             "message_count": message_count,
             "intent": intent_result.intent,
-            "selected_fragment_ids": [fragment.fragment_id for fragment in fragments],
+            "matched_snippet_ids": [hit.snippet.snippet_id for hit in hits],
             "cost_summary": cost_summary.model_dump(),
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
         reasoning_summary = [
             "后端接收 ChatRequest，保持 user_message 与可信 runtime_* 分离。",
             "系统沿用规则优先、轻量分类模型兜底，先得到稳定的粗粒度 intent。",
-            f"Prompt Registry 按意图选择了 {len(fragments)} 个启用片段，并按优先级渲染。",
+            f"基础 RAG 从 {len(snippets)} 个知识片段中选出 {len(hits)} 个相关片段。",
+            "当前检索基于 Markdown 元数据、关键词和意图加权，还不是向量检索。",
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
-            "成本观察说明规则片段仍会在每轮进入上下文，估算金额不替代模型平台账单。",
         ]
         session_state = {
-            "agent_version": "0.5.0",
+            "agent_version": "0.6.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -279,28 +295,24 @@ class CustomerServiceAgent:
                 "page_context": request.runtime_context or {},
             },
             "model_answer": model_answer.model_dump(),
-            "prompt_boundary": {
-                "mode": "system_prompt_fact_priority_and_refusal_rules",
-                "fact_priority": [
-                    "runtime_facts",
-                    "current_policy_documents",
-                    "legacy_documents",
-                    "user_claims",
-                    "model_general_knowledge",
-                ],
-                "boundary_rule_count": 4,
-            },
-            "prompt_registry": {
-                "template": "customer_service_v1",
-                "selected_fragment_ids": [fragment.fragment_id for fragment in fragments],
-                "selected_fragment_count": len(fragments),
-                "selected_priorities": [fragment.priority for fragment in fragments],
+            "rag": {
+                "mode": "select_relevant_snippets",
+                "retrieval_strategy": "keyword_overlap_with_intent_boost",
+                "vector_search": False,
+                "top_k": RAG_TOP_K,
+                "candidate_count": len(snippets),
+                "retrieved_count": len(hits),
+                "matched_snippet_ids": [hit.snippet.snippet_id for hit in hits],
+                "scores": {hit.snippet.snippet_id: hit.score for hit in hits},
+                "matched_keywords": {
+                    hit.snippet.snippet_id: hit.matched_keywords for hit in hits
+                },
             },
             "cost_log": {
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "Prompt Registry 改善了维护性，但规则文字仍会在每轮重复发送；下一步需要只检索相关资料。",
+            "next_gap": "当前只完成关键词与意图加权检索；下一步需要稳定切片、向量检索和可验证引用来源。",
         }
         return ChatResponse(
             session_id=request.session_id,

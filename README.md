@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.5.0
+## v0.6.0
 
 当前版本提供：
 
@@ -13,7 +13,10 @@
 - 规则优先、轻量分类模型兜底的结构化意图识别；
 - 稳定的 `intent_result`（意图、来源、置信度、命中词和说明）；
 - 集中管理客服身份、事实优先级和高风险回答边界；
-- 通过 `prompt_registry.json` 管理可启用、可排序、按意图选择的 Prompt 片段；
+- 从仓库内 Markdown 原文解析知识片段；
+- 通过关键词重合与粗意图加权选择本轮相关知识；
+- 只把 Top-K 命中片段放入回答上下文；
+- 在 `session_state.rag` 暴露候选数、命中 ID、分数与关键词；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
 - 返回输入、输出、总 token 与人民币估算成本；
 - 记录会话级成本观察事件；
@@ -22,7 +25,7 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本能识别粗粒度客服意图，按意图组合 Prompt 片段，并观察每轮模型调用的 token 和估算成本。Prompt Registry 改善的是规则维护与选择方式，不等于 RAG，也不能替代订单、物流、库存和售后业务接口。系统暂不提供向量检索、业务工具、多轮记忆、工作流、人工审批和评测。
+当前版本建立了“检索后回答”的基础 RAG 链路，并保留 token 与成本观察。当前检索只使用 Markdown 元数据、关键词重合和意图加权，**不是真正的 Embedding 向量检索，也没有 citations**。它不能替代订单、物流、库存和售后业务接口，系统也暂不提供业务工具、多轮记忆、工作流、人工审批和评测。
 
 ## 项目结构
 
@@ -32,9 +35,9 @@ backend/
   api/          # HTTP 路由与请求响应契约
   config/       # 环境变量与能力清单
   cost/         # Token usage 解析与估算成本
+  knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
   models/       # OpenAI-compatible 模型客户端
-  prompts/      # Prompt Registry 加载、选择与渲染
-  prompt_registry.json
+  rag/          # 文档解析、知识检索与 RAG Prompt 渲染
   main.py       # FastAPI 应用入口
 ```
 
@@ -88,7 +91,14 @@ Set-Location backend
 }
 ```
 
-`session_state.prompt_registry` 会返回本轮选中的 Prompt 片段；顶层 `cost_summary` 会返回：
+`session_state.rag` 会返回：
+
+- `retrieval_strategy=keyword_overlap_with_intent_boost`；
+- `vector_search=false`；
+- 候选知识数量、命中数量和 Top-K；
+- 命中知识 ID、相关性分数和关键词证据。
+
+顶层 `cost_summary` 继续返回：
 
 - `prompt_tokens`、`answer_tokens` 和 `total_tokens`；
 - `token_source=model_usage` 或 `local_estimate`；

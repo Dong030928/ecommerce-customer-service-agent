@@ -45,16 +45,46 @@ class IntentResult(BaseModel):
     explanation: str
 
 
-class PromptFragment(BaseModel):
-    """Selectable and ordered prompt fragment loaded from the registry."""
+class SourceDocument(BaseModel):
+    """Repository-local Markdown source document."""
 
-    fragment_id: str
+    source_path: str
     title: str
-    priority: int
-    enabled: bool = True
-    applies_to: list[str]
-    tags: list[str] = Field(default_factory=list)
-    content: str
+    metadata: dict[str, Any]
+    body: str
+
+
+class KnowledgeSection(BaseModel):
+    """Metadata-bearing section parsed from a source document."""
+
+    source_path: str
+    document_title: str
+    section_index: int = Field(ge=1)
+    section: str
+    snippet_id: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    effective_status: str = "active"
+    text: str
+
+
+class KnowledgeSnippet(BaseModel):
+    """Minimal unit used by the current keyword retrieval baseline."""
+
+    snippet_id: str
+    title: str
+    topic: Intent
+    source_path: str
+    keywords: list[str]
+    effective_status: str = "active"
+    text: str
+
+
+class KnowledgeHit(BaseModel):
+    """Retrieved snippet with observable relevance evidence."""
+
+    snippet: KnowledgeSnippet
+    score: float = Field(ge=0.0, le=1.0)
+    matched_keywords: list[str]
 
 
 class TokenUsage(BaseModel):
@@ -95,6 +125,8 @@ class ChatResponse(BaseModel):
 
 ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": ReasoningView})
 IntentResult.model_rebuild(_types_namespace={"Intent": Intent, "IntentSource": IntentSource})
+KnowledgeSnippet.model_rebuild(_types_namespace={"Intent": Intent})
+KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeSnippet": KnowledgeSnippet})
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
