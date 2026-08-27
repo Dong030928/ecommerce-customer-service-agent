@@ -7,13 +7,13 @@ import re
 import httpx
 
 from api.schemas import ChatRequest, ChatResponse, Intent, IntentResult
+from cost.observer import build_cost_summary
 from models.classifier_client import classify_intent_with_model
 from models.llm_client import call_chat_model
 from prompts.loader import (
-    FULL_POLICY_DOCUMENTS,
-    build_full_context_messages,
-    detect_context_conflicts,
-    estimate_tokens,
+    load_prompt_registry,
+    render_prompt_template,
+    select_prompt_fragments,
 )
 
 
@@ -213,6 +213,7 @@ class CustomerServiceAgent:
         answer_model_name: str | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
+        self._cost_events_by_session: dict[str, list[dict]] = {}
         self._classifier_http_client = classifier_http_client
         self._classifier_api_key = classifier_api_key
         self._classifier_base_url = classifier_base_url
@@ -236,14 +237,9 @@ class CustomerServiceAgent:
             base_url=self._classifier_base_url,
             model=self._classifier_model_name,
         )
-        conflicts = detect_context_conflicts(request.user_message)
-        messages = build_full_context_messages(
-            request,
-            intent_result,
-            FULL_POLICY_DOCUMENTS,
-            conflicts,
-        )
-        prompt_text = "\n".join(message["content"] for message in messages)
+        registry = load_prompt_registry()
+        fragments = select_prompt_fragments(intent_result.intent, registry)
+        messages = render_prompt_template(request, intent_result, fragments)
         fallback_answer = build_answer(intent_result)
         model_answer = call_chat_model(
             messages,
@@ -253,15 +249,27 @@ class CustomerServiceAgent:
             base_url=self._answer_base_url,
             model=self._answer_model_name,
         )
+        cost_summary = build_cost_summary(
+            messages,
+            model_answer.answer,
+            model_answer.usage,
+        )
+        event = {
+            "message_count": message_count,
+            "intent": intent_result.intent,
+            "selected_fragment_ids": [fragment.fragment_id for fragment in fragments],
+            "cost_summary": cost_summary.model_dump(),
+        }
+        self._cost_events_by_session.setdefault(request.session_id, []).append(event)
         reasoning_summary = [
             "后端接收 ChatRequest，保持 user_message 与可信 runtime_* 分离。",
             "系统沿用规则优先、轻量分类模型兜底，先得到稳定的粗粒度 intent。",
-            "system prompt 声明客服身份、事实优先级和高风险回答边界。",
-            f"当前版本将 {len(FULL_POLICY_DOCUMENTS)} 份规则文档全量注入 Prompt。",
-            f"本轮发现 {len(conflicts)} 条上下文冲突线索，但不把它当成自动裁决结果。",
+            f"Prompt Registry 按意图选择了 {len(fragments)} 个启用片段，并按优先级渲染。",
+            f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
+            "成本观察说明规则片段仍会在每轮进入上下文，估算金额不替代模型平台账单。",
         ]
         session_state = {
-            "agent_version": "0.4.0",
+            "agent_version": "0.5.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -282,21 +290,24 @@ class CustomerServiceAgent:
                 ],
                 "boundary_rule_count": 4,
             },
-            "prompt_context": {
-                "mode": "full_document_injection",
-                "document_count": len(FULL_POLICY_DOCUMENTS),
-                "document_ids": [document.doc_id for document in FULL_POLICY_DOCUMENTS],
-                "estimated_prompt_tokens": estimate_tokens(prompt_text),
-                "conflict_count": len(conflicts),
-                "conflicts": [conflict.model_dump() for conflict in conflicts],
+            "prompt_registry": {
+                "template": "customer_service_v1",
+                "selected_fragment_ids": [fragment.fragment_id for fragment in fragments],
+                "selected_fragment_count": len(fragments),
+                "selected_priorities": [fragment.priority for fragment in fragments],
             },
-            "next_gap": "全量 Prompt 能让规则进入模型，但上下文会持续变长，新旧规则也可能互相干扰。",
+            "cost_log": {
+                "event_count": len(self._cost_events_by_session[request.session_id]),
+                "latest": event,
+            },
+            "next_gap": "Prompt Registry 改善了维护性，但规则文字仍会在每轮重复发送；下一步需要只检索相关资料。",
         }
         return ChatResponse(
             session_id=request.session_id,
             answer=model_answer.answer,
             intent=intent_result.intent,
             intent_result=intent_result,
+            cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state=session_state,
         )

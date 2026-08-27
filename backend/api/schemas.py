@@ -45,23 +45,40 @@ class IntentResult(BaseModel):
     explanation: str
 
 
-class PolicyDocument(BaseModel):
-    """Policy document deliberately injected into the full prompt context."""
+class PromptFragment(BaseModel):
+    """Selectable and ordered prompt fragment loaded from the registry."""
 
-    doc_id: str
+    fragment_id: str
     title: str
-    status: Literal["current", "legacy", "draft"]
-    keywords: list[str]
-    body: str
+    priority: int
+    enabled: bool = True
+    applies_to: list[str]
+    tags: list[str] = Field(default_factory=list)
+    content: str
 
 
-class ContextConflict(BaseModel):
-    """Observable conflict signal, not an automatic policy decision."""
+class TokenUsage(BaseModel):
+    """Normalized model-provider token usage."""
 
-    topic: str
-    newer_doc_id: str
-    older_doc_id: str
-    reason: str
+    prompt_tokens: int = Field(ge=0)
+    answer_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class CostSummary(BaseModel):
+    """Public token and estimated cost observation for one request."""
+
+    prompt_tokens: int = Field(ge=0)
+    answer_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    token_source: Literal["model_usage", "local_estimate"]
+    usage_details: dict[str, Any] = Field(default_factory=dict)
+    estimated_input_cost_cny: float = Field(ge=0)
+    estimated_output_cost_cny: float = Field(ge=0)
+    estimated_total_cost_cny: float = Field(ge=0)
+    context_chars: int = Field(ge=0)
+    pricing_note: str
 
 
 class ChatResponse(BaseModel):
@@ -71,10 +88,18 @@ class ChatResponse(BaseModel):
     answer: str
     intent: Intent
     intent_result: IntentResult
+    cost_summary: CostSummary
     reasoning_summary: list[str]
     session_state: dict[str, Any]
 
 
 ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": ReasoningView})
 IntentResult.model_rebuild(_types_namespace={"Intent": Intent, "IntentSource": IntentSource})
-ChatResponse.model_rebuild(_types_namespace={"Any": Any, "Intent": Intent, "IntentResult": IntentResult})
+ChatResponse.model_rebuild(
+    _types_namespace={
+        "Any": Any,
+        "CostSummary": CostSummary,
+        "Intent": Intent,
+        "IntentResult": IntentResult,
+    }
+)

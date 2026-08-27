@@ -7,7 +7,9 @@ import os
 import httpx
 from pydantic import BaseModel
 
+from api.schemas import TokenUsage
 from config.settings import api_key_is_missing, load_project_env
+from cost.observer import parse_model_usage
 
 
 class ModelAnswerResult(BaseModel):
@@ -17,6 +19,7 @@ class ModelAnswerResult(BaseModel):
     used_model: bool = False
     model_name: str | None = None
     fallback_reason: str | None = None
+    usage: TokenUsage | None = None
 
 
 def call_chat_model(
@@ -50,14 +53,20 @@ def call_chat_model(
         else:
             response = httpx.post(f"{resolved_base_url}/chat/completions", **request_kwargs, timeout=30)
         response.raise_for_status()
-        answer = response.json()["choices"][0]["message"]["content"].strip()
+        payload = response.json()
+        answer = payload["choices"][0]["message"]["content"].strip()
         if not answer:
             return ModelAnswerResult(
                 answer=fallback_answer,
                 model_name=resolved_model,
                 fallback_reason="empty_model_answer",
             )
-        return ModelAnswerResult(answer=answer, used_model=True, model_name=resolved_model)
+        return ModelAnswerResult(
+            answer=answer,
+            used_model=True,
+            model_name=resolved_model,
+            usage=parse_model_usage(payload),
+        )
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
         return ModelAnswerResult(
             answer=fallback_answer,

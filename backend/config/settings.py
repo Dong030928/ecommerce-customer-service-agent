@@ -10,8 +10,11 @@ from typing import Any
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 CAPABILITIES_PATH = BACKEND_DIR / "agent_capabilities.json"
+PROMPT_REGISTRY_PATH = BACKEND_DIR / "prompt_registry.json"
 DEFAULT_ENV_PATH = BACKEND_DIR.parent / ".env"
 PLACEHOLDER_API_KEYS = {"", "你的模型平台 Key", "your-api-key", "YOUR_API_KEY"}
+DEFAULT_INPUT_CNY_PER_1K = 0.001
+DEFAULT_OUTPUT_CNY_PER_1K = 0.002
 
 
 def load_agent_capabilities() -> dict[str, Any]:

@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.4.0-prompt-boundary",
-    "title": "Prompt Boundary And Full Context",
-    "summary": "当前版本通过 system prompt 声明事实优先级和回答边界，并全量注入规则文档以观察长上下文与新旧规则冲突。"
+    "id": "v0.5.0-prompt-registry-token-cost",
+    "title": "Prompt Registry And Token Cost Observation",
+    "summary": "当前版本按意图选择并组合 Prompt Registry 片段，同时优先使用模型 usage、缺失时使用本地估算生成成本摘要。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "endpoints": {
     "health": true,
@@ -25,7 +25,8 @@
     "grounded_model_answer": true,
     "structured_intent": true,
     "prompt_boundary": true,
-    "full_prompt_context": true,
+    "prompt_registry": true,
+    "full_prompt_context": false,
     "rag_citations": false,
     "tool_calls": false,
     "workflow": false,
@@ -34,18 +35,18 @@
     "hooks": false,
     "trace": false,
     "evaluation": false,
-    "cost_summary": false
+    "cost_summary": true
   },
   "disabled_reasons": {
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
-    "rag_citations": "当前版本只做全量 Prompt 注入，还没有 RAG 检索和引用。",
+    "full_prompt_context": "当前版本已从全量注入切换为按意图选择 Prompt Registry 片段。",
+    "rag_citations": "当前版本只观察 Prompt 成本，还没有 RAG 检索和引用。",
     "tool_calls": "业务工具还没有接入。",
     "workflow": "售后工作流还没有接入。",
     "human_approval": "HITL 人工确认还没有接入。",
     "memory": "多轮记忆还没有接入。",
     "hooks": "Hooks 治理还没有接入。",
     "trace": "Trace 公开轨迹还没有接入。",
-    "evaluation": "Evaluation 回归评测将在后续版本接入。",
-    "cost_summary": "成本统计还没有接入。"
+    "evaluation": "Evaluation 回归评测将在后续版本接入。"
   }
 }
