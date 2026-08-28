@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.6.0-basic-rag",
-    "title": "Basic Retrieve Before Answer",
-    "summary": "当前版本先通过 Markdown 元数据、关键词和意图加权选择相关知识，再把少量命中片段交给模型；尚未使用向量检索。"
+    "id": "v0.7.0-vector-rag-citations",
+    "title": "Vector Retrieval With Citations",
+    "summary": "当前版本将 Markdown 切分为带来源元数据的稳定知识块，通过真实 Embedding 与余弦相似度完成 Top-K 检索，并为真实命中结果生成可核验引用。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.6.0"
+    "version": "0.7.0"
   },
   "endpoints": {
     "health": true,
@@ -28,8 +28,10 @@
     "prompt_registry": false,
     "full_prompt_context": false,
     "basic_rag": true,
-    "vector_search": false,
-    "rag_citations": false,
+    "document_chunking": true,
+    "vector_retrieval": true,
+    "vector_search": true,
+    "rag_citations": true,
     "tool_calls": false,
     "workflow": false,
     "human_approval": false,
@@ -43,8 +45,6 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "vector_search": "当前版本是关键词与意图加权的基础检索，还没有 Embedding 或向量数据库。",
-    "rag_citations": "当前版本只把相关知识放入回答上下文，还没有返回可验证引用。",
     "tool_calls": "业务工具还没有接入。",
     "workflow": "售后工作流还没有接入。",
     "human_approval": "HITL 人工确认还没有接入。",

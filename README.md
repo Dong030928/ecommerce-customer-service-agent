@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.6.0
+## v0.7.0
 
 当前版本提供：
 
@@ -13,10 +13,13 @@
 - 规则优先、轻量分类模型兜底的结构化意图识别；
 - 稳定的 `intent_result`（意图、来源、置信度、命中词和说明）；
 - 集中管理客服身份、事实优先级和高风险回答边界；
-- 从仓库内 Markdown 原文解析知识片段；
-- 通过关键词重合与粗意图加权选择本轮相关知识；
-- 只把 Top-K 命中片段放入回答上下文；
-- 在 `session_state.rag` 暴露候选数、命中 ID、分数与关键词；
+- 从仓库内 Markdown 原文解析带来源、章节和 metadata 的稳定知识块；
+- 使用固定长度与重叠窗口切分长章节，保留可追溯的 `chunk_id`；
+- 调用 OpenAI-compatible Embedding 接口批量生成向量并在进程内缓存；
+- 通过余弦相似度、分数阈值与 Top-K 执行真正的向量检索；
+- 过滤非当前有效知识，只有明确查询历史时才召回历史规则；
+- 只把真实命中的知识块放入回答上下文，并返回顶层 `citations`；
+- 在 `session_state.rag` 暴露模型、阈值、命中 ID、分数与回答路径；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
 - 返回输入、输出、总 token 与人民币估算成本；
 - 记录会话级成本观察事件；
@@ -25,7 +28,7 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本建立了“检索后回答”的基础 RAG 链路，并保留 token 与成本观察。当前检索只使用 Markdown 元数据、关键词重合和意图加权，**不是真正的 Embedding 向量检索，也没有 citations**。它不能替代订单、物流、库存和售后业务接口，系统也暂不提供业务工具、多轮记忆、工作流、人工审批和评测。
+当前版本已经建立“稳定切片 → Embedding → 进程内向量索引 → 余弦相似度 Top-K → Grounded Answer → Citations”的完整 RAG 链路，并保留结构化意图、token 成本观察和 Runtime Context 隐私边界。向量索引目前只在单进程内缓存，尚未持久化；知识库也不能替代订单、物流、库存和售后业务接口。系统暂不提供业务工具、多轮记忆、工作流、人工审批和评测。
 
 ## 项目结构
 
@@ -36,8 +39,9 @@ backend/
   config/       # 环境变量与能力清单
   cost/         # Token usage 解析与估算成本
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
-  models/       # OpenAI-compatible 模型客户端
-  rag/          # 文档解析、知识检索与 RAG Prompt 渲染
+  embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
+  models/       # OpenAI-compatible 分类和回答模型客户端
+  rag/          # 文档切片、进程内向量索引与相似度检索
   main.py       # FastAPI 应用入口
 ```
 
@@ -51,7 +55,7 @@ py -3.13 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中配置真实的 `AGENT_OPENAI_API_KEY`，不要把密钥提交到 Git。然后启动：
+在 `.env` 中配置真实的 `AGENT_OPENAI_API_KEY`；`AGENT_EMBEDDING_MODEL` 可单独指定向量模型。不要把密钥提交到 Git。然后启动：
 
 ```powershell
 Set-Location backend
@@ -91,12 +95,12 @@ Set-Location backend
 }
 ```
 
-`session_state.rag` 会返回：
+业务知识命中时，顶层 `citations` 会返回：
 
-- `retrieval_strategy=keyword_overlap_with_intent_boost`；
-- `vector_search=false`；
-- 候选知识数量、命中数量和 Top-K；
-- 命中知识 ID、相关性分数和关键词证据。
+- `citation_id`、`source_title` 和 `source_path`；
+- `section`、`chunk_id`、余弦相似度分数和原文片段。
+
+`session_state.rag` 会返回 `embedding_cosine_similarity` 检索策略、Embedding 模型、阈值、Top-K、知识块数量、命中 ID、分数、引用数量和回答路径。当前索引是进程内实现，不是独立向量数据库。
 
 顶层 `cost_summary` 继续返回：
 

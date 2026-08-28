@@ -26,9 +26,15 @@ class ChatRequest(BaseModel):
     session_id: str = Field(..., description="当前对话会话 ID")
     # runtime_* values must come from trusted application state rather than user text.
     runtime_user_id: str = Field(..., description="可信调用方确认的用户 ID")
-    runtime_nickname: str | None = Field(default=None, description="可信调用方确认的用户昵称")
-    runtime_member_level: str | None = Field(default=None, description="可信调用方确认的会员等级")
-    runtime_risk_level: str | None = Field(default=None, description="可信调用方确认的风险等级")
+    runtime_nickname: str | None = Field(
+        default=None, description="可信调用方确认的用户昵称"
+    )
+    runtime_member_level: str | None = Field(
+        default=None, description="可信调用方确认的会员等级"
+    )
+    runtime_risk_level: str | None = Field(
+        default=None, description="可信调用方确认的风险等级"
+    )
     user_message: str = Field(..., description="用户输入的问题")
     reasoning_view: ReasoningView = "default"
     debug: bool = True
@@ -61,30 +67,50 @@ class KnowledgeSection(BaseModel):
     document_title: str
     section_index: int = Field(ge=1)
     section: str
-    snippet_id: str | None = None
+    chunk_id: str | None = None
     keywords: list[str] = Field(default_factory=list)
     effective_status: str = "active"
     text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class KnowledgeSnippet(BaseModel):
-    """Minimal unit used by the current keyword retrieval baseline."""
+class KnowledgeChunk(BaseModel):
+    """Stable retrieval unit carrying its source and section metadata."""
 
-    snippet_id: str
-    title: str
-    topic: Intent
+    chunk_id: str
+    document_title: str
     source_path: str
-    keywords: list[str]
+    section: str
+    keywords: list[str] = Field(default_factory=list)
     effective_status: str = "active"
     text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class VectorRecord(BaseModel):
+    """Knowledge chunk paired with its embedding vector."""
+
+    chunk: KnowledgeChunk
+    embedding: list[float]
 
 
 class KnowledgeHit(BaseModel):
-    """Retrieved snippet with observable relevance evidence."""
+    """Retrieved chunk with observable cosine similarity."""
 
-    snippet: KnowledgeSnippet
+    chunk: KnowledgeChunk
     score: float = Field(ge=0.0, le=1.0)
-    matched_keywords: list[str]
+
+
+class Citation(BaseModel):
+    """Public source citation derived from an actual retrieval hit."""
+
+    citation_id: str
+    source_title: str
+    source_path: str
+    section: str
+    chunk_id: str
+    score: float = Field(ge=0.0, le=1.0)
+    snippet: str
 
 
 class TokenUsage(BaseModel):
@@ -118,19 +144,25 @@ class ChatResponse(BaseModel):
     answer: str
     intent: Intent
     intent_result: IntentResult
+    citations: list[Citation] = Field(default_factory=list)
     cost_summary: CostSummary
     reasoning_summary: list[str]
     session_state: dict[str, Any]
 
 
 ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": ReasoningView})
-IntentResult.model_rebuild(_types_namespace={"Intent": Intent, "IntentSource": IntentSource})
-KnowledgeSnippet.model_rebuild(_types_namespace={"Intent": Intent})
-KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeSnippet": KnowledgeSnippet})
+IntentResult.model_rebuild(
+    _types_namespace={"Intent": Intent, "IntentSource": IntentSource}
+)
+KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
+VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
+KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
+Citation.model_rebuild()
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
         "CostSummary": CostSummary,
+        "Citation": Citation,
         "Intent": Intent,
         "IntentResult": IntentResult,
     }

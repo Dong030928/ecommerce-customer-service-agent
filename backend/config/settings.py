@@ -15,7 +15,12 @@ DEFAULT_ENV_PATH = BACKEND_DIR.parent / ".env"
 PLACEHOLDER_API_KEYS = {"", "你的模型平台 Key", "your-api-key", "YOUR_API_KEY"}
 DEFAULT_INPUT_CNY_PER_1K = 0.001
 DEFAULT_OUTPUT_CNY_PER_1K = 0.002
-RAG_TOP_K = 2
+DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-4B"
+CHUNK_SIZE = 420
+CHUNK_OVERLAP = 80
+TOP_K = 2
+SCORE_THRESHOLD = 0.30
 
 
 def load_agent_capabilities() -> dict[str, Any]:
