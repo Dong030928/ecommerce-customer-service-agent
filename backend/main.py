@@ -16,7 +16,7 @@ agent = CustomerServiceAgent()
 def create_app() -> FastAPI:
     """Assemble the FastAPI application while keeping the entry point thin."""
 
-    app = FastAPI(title="E-commerce Customer Service Agent", version="0.8.0")
+    app = FastAPI(title="E-commerce Customer Service Agent", version="0.9.0")
 
     # The first version is intended for local development and API verification.
     app.add_middleware(

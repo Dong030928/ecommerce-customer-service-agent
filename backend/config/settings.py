@@ -20,10 +20,29 @@ DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-4B"
 CHUNK_SIZE = 420
 CHUNK_OVERLAP = 80
-TOP_K = 2
+CANDIDATE_K = 4
+FINAL_TOP_K = 2
 RETRIEVAL_SCORE_THRESHOLD = 0.20
-# 该阈值判断最高分命中是否足以支撑回答，需要随模型和知识库重新校准。
-LOW_CONFIDENCE_THRESHOLD = 0.68
+# 重排后的最高分仍需通过可靠性门槛；更换模型或知识库后必须重新校准。
+LOW_CONFIDENCE_THRESHOLD = 0.50
+RERANK_MODEL_DEFAULT = "Qwen/Qwen3-Reranker-8B"
+RERANK_INSTRUCTION_DEFAULT = (
+    "Rank passages that directly support the e-commerce customer-service answer higher. "
+    "Prefer current effective rules over expired notes and passages containing the exact "
+    "promotion, refund, shipping, or product constraints needed by the user."
+)
+RERANK_TIMEOUT_SECONDS = 10.0
+NORMALIZATION_RULES: list[tuple[str, str, str]] = [
+    ("那个", "", "去掉缺少上下文的指代词“那个”"),
+    ("这个", "", "去掉缺少上下文的指代词“这个”"),
+    ("那款", "", "去掉缺少上下文的指代词“那款”"),
+    ("这款", "", "去掉缺少上下文的指代词“这款”"),
+    ("耳麦", "耳机", "把口语“耳麦”对齐为知识库常用词“耳机”"),
+    ("叠券", "叠加 优惠券", "把口语“叠券”展开为“叠加 优惠券”"),
+    ("会员券", "优惠券", "把“会员券”归一为知识库里的“优惠券”"),
+    ("能叠吗", "能否 叠加 优惠券", "把省略问法展开为优惠叠加问题"),
+    ("促销", "活动", "把“促销”归一为活动规则用词"),
+]
 
 
 def load_agent_capabilities() -> dict[str, Any]:
@@ -56,3 +75,12 @@ def api_key_is_missing(api_key: str | None) -> bool:
     """Return whether the model key is missing or still a placeholder."""
 
     return api_key is None or api_key.strip() in PLACEHOLDER_API_KEYS
+
+
+def env_flag_enabled(name: str, default: bool = False) -> bool:
+    """Read a conventional boolean environment flag."""
+
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}

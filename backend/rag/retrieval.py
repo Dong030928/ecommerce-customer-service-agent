@@ -6,7 +6,7 @@ import math
 import weakref
 
 from api.schemas import KnowledgeChunk, KnowledgeHit, VectorRecord
-from config.settings import RETRIEVAL_SCORE_THRESHOLD, TOP_K
+from config.settings import CANDIDATE_K, RETRIEVAL_SCORE_THRESHOLD
 from embeddings.client import (
     DEFAULT_EMBEDDING_CLIENT,
     EmbeddingClient,
@@ -74,14 +74,14 @@ def chunk_embedding_text(chunk: KnowledgeChunk) -> str:
     )
 
 
-def retrieve_knowledge(
+def retrieve_candidates(
     query: str,
     *,
-    top_k: int = TOP_K,
+    top_k: int = CANDIDATE_K,
     threshold: float = RETRIEVAL_SCORE_THRESHOLD,
     embedding_client: EmbeddingClient | None = None,
 ) -> list[KnowledgeHit]:
-    """Retrieve candidate chunks for a later answer-confidence decision."""
+    """Retrieve the wider vector candidate set used by the reranker."""
 
     query_embedding = embed_text(query, embedding_client)
     asks_for_history = query_asks_for_history(query)
@@ -91,5 +91,38 @@ def retrieve_knowledge(
             continue
         score = cosine_similarity(query_embedding, record.embedding)
         if score >= threshold:
-            hits.append(KnowledgeHit(chunk=record.chunk, score=round(score, 3)))
-    return sorted(hits, key=lambda hit: hit.score, reverse=True)[:top_k]
+            rounded_score = round(max(0.0, min(1.0, score)), 3)
+            hits.append(
+                KnowledgeHit(
+                    chunk=record.chunk,
+                    score=rounded_score,
+                    vector_score=rounded_score,
+                )
+            )
+    return sorted(
+        hits,
+        key=lambda hit: hit.vector_score if hit.vector_score is not None else hit.score,
+        reverse=True,
+    )[:top_k]
+
+
+def merge_candidates(*candidate_groups: list[KnowledgeHit]) -> list[KnowledgeHit]:
+    """Merge original-query and rewritten-query candidates by best vector score."""
+
+    merged: dict[str, KnowledgeHit] = {}
+    for group in candidate_groups:
+        for hit in group:
+            current = merged.get(hit.chunk.chunk_id)
+            hit_score = hit.vector_score if hit.vector_score is not None else hit.score
+            current_score = (
+                current.vector_score
+                if current is not None and current.vector_score is not None
+                else current.score if current is not None else -1.0
+            )
+            if current is None or hit_score > current_score:
+                merged[hit.chunk.chunk_id] = hit
+    return sorted(
+        merged.values(),
+        key=lambda hit: hit.vector_score if hit.vector_score is not None else hit.score,
+        reverse=True,
+    )[:CANDIDATE_K]

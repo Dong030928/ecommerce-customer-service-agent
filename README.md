@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.8.0
+## v0.9.0
 
 当前版本提供：
 
@@ -24,6 +24,12 @@
 - 使用固定问题集计算 `recall@k`、`precision@k` 和用例通过状态；
 - 在 `session_state.rag` 暴露候选阈值、低置信阈值、最高分和兜底动作；
 - 在 `session_state.rag_quality` 暴露固定问题集质量摘要；
+- 保留用户原话，为向量检索单独生成 `rewritten_query`；
+- 对“耳麦”“叠券”“促销”等口语表达进行可观测归一化；
+- 按意图补齐活动或售后检索词，但不读取可信 Runtime 身份字段；
+- 合并原始查询和改写查询的候选知识，避免单路检索遗漏；
+- 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
+- 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
 - 返回输入、输出、总 token 与人民币估算成本；
 - 记录会话级成本观察事件；
@@ -32,7 +38,7 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本已经建立“稳定切片 → Embedding → 候选召回 → 低置信判断 → Grounded Answer/Citations 或安全兜底”的 RAG 链路，并用固定问题集观察基础召回质量。它保留结构化意图、token 成本观察和 Runtime Context 隐私边界。固定问题集只是轻量质量检查，不是完整 Evaluation 平台；阈值需要在更换 Embedding 模型、知识文件或切片策略后重新校准。向量索引目前只在单进程内缓存，知识库也不能替代订单、物流、库存和售后业务接口。
+当前版本已经建立“稳定切片 → 查询改写 → 原始/改写双路向量召回 → 候选合并 → Reranker → 低置信判断 → Grounded Answer/Citations 或安全兜底”的 RAG 链路，并用固定问题集观察基础质量。用户原话保持不变；Runtime Context 只保存在本地状态，不会被补写进 Embedding、Reranker 或回答模型请求。固定问题集仍是轻量检查，不是完整 Evaluation 平台。当前还没有关键词混合召回和版本化索引更新，知识库也不能替代订单、物流、库存和售后业务接口。
 
 ## 项目结构
 
@@ -45,7 +51,7 @@ backend/
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
   embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
   models/       # OpenAI-compatible 分类和回答模型客户端
-  rag/          # 文档切片、向量召回、质量检查与低置信判断
+  rag/          # 文档切片、查询改写、向量召回、重排与质量检查
   rag_quality_cases.json # 固定 RAG 质量问题集
   main.py       # FastAPI 应用入口
 ```
@@ -60,7 +66,7 @@ py -3.13 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中配置真实的 `AGENT_OPENAI_API_KEY`；`AGENT_EMBEDDING_MODEL` 可单独指定向量模型。不要把密钥提交到 Git。然后启动：
+在 `.env` 中配置真实的 `AGENT_OPENAI_API_KEY`；`AGENT_EMBEDDING_MODEL` 可单独指定向量模型。默认使用轻量重排；如需商业 reranker，可将 `AGENT_RAG_RERANK_ENABLED` 设为 `1` 并配置对应地址、模型和可选独立 Key。不要把密钥提交到 Git。然后启动：
 
 ```powershell
 Set-Location backend
@@ -105,7 +111,7 @@ Set-Location backend
 - `citation_id`、`source_title` 和 `source_path`；
 - `section`、`chunk_id`、余弦相似度分数和原文片段。
 
-`session_state.rag` 会返回 `embedding_cosine_similarity` 检索策略、Embedding 模型、候选入场阈值、低置信阈值、最高分、候选与可靠命中数量、引用数量及兜底动作。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。当前索引是进程内实现，不是独立向量数据库。
+`session_state.rag` 会返回查询改写内容、原始与改写候选数量、合并候选、重排顺序、向量/重排/最终分数、reranker 模式和安全错误类型，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。当前索引是进程内实现，不是独立向量数据库。
 
 顶层 `cost_summary` 继续返回：
 

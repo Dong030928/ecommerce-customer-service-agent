@@ -95,10 +95,23 @@ class VectorRecord(BaseModel):
 
 
 class KnowledgeHit(BaseModel):
-    """Retrieved chunk with observable cosine similarity."""
+    """Retrieved chunk with vector and optional reranking evidence."""
 
     chunk: KnowledgeChunk
     score: float = Field(ge=0.0, le=1.0)
+    vector_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    rerank_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    rerank_reasons: list[str] = Field(default_factory=list)
+
+
+class QueryRewrite(BaseModel):
+    """Retrieval-only rewrite that preserves the user's original message."""
+
+    original_query: str
+    rewritten_query: str
+    applied: bool
+    added_terms: list[str] = Field(default_factory=list)
+    reason: str
 
 
 class Citation(BaseModel):
@@ -188,6 +201,7 @@ IntentResult.model_rebuild(
 KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
 VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
+QueryRewrite.model_rebuild()
 Citation.model_rebuild()
 RagQualityCase.model_rebuild()
 RagQualityCaseResult.model_rebuild()

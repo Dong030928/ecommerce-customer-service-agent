@@ -9,23 +9,26 @@ import httpx
 from api.schemas import (
     ChatRequest,
     ChatResponse,
-    Citation,
     Intent,
     IntentResult,
     KnowledgeHit,
 )
 from config.settings import (
+    CANDIDATE_K,
+    FINAL_TOP_K,
     LOW_CONFIDENCE_THRESHOLD,
     RETRIEVAL_SCORE_THRESHOLD,
-    TOP_K,
 )
 from cost.observer import build_cost_summary
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from models.classifier_client import classify_intent_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from rag.knowledge_base import load_knowledge_chunks
+from rag.prompting import build_citations, render_rag_messages
 from rag.quality import is_low_confidence, run_rag_quality_check
-from rag.retrieval import retrieve_knowledge
+from rag.query_rewrite import normalize_query, rewrite_retrieval_query
+from rag.reranker import RerankConfig, rerank_candidates
+from rag.retrieval import merge_candidates, retrieve_candidates
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -113,7 +116,7 @@ def build_rule_evidence(message: str) -> list[tuple[Intent, list[str], list[str]
 def plan_intent_by_rules(user_message: str) -> IntentResult | None:
     """Handle high-confidence customer-service intents deterministically."""
 
-    message = user_message.strip().lower()
+    message = normalize_query(user_message)
     evidence = build_rule_evidence(message)
     active_evidence = [item for item in evidence if item[1]]
     negated_keywords = [keyword for _, _, negated, _ in evidence for keyword in negated]
@@ -257,46 +260,6 @@ def build_low_confidence_answer() -> str:
     )
 
 
-def build_citations(hits: list[KnowledgeHit]) -> list[Citation]:
-    """Convert only actual retrieval hits into public citations."""
-
-    return [
-        Citation(
-            citation_id=f"C{index}",
-            source_title=hit.chunk.document_title,
-            source_path=hit.chunk.source_path,
-            section=hit.chunk.section,
-            chunk_id=hit.chunk.chunk_id,
-            score=hit.score,
-            snippet=hit.chunk.text,
-        )
-        for index, hit in enumerate(hits, start=1)
-    ]
-
-
-def render_rag_messages(
-    user_message: str,
-    intent_result: IntentResult,
-    hits: list[KnowledgeHit],
-) -> list[dict[str, str]]:
-    """Render a minimal grounded prompt without trusted runtime identity values."""
-
-    knowledge = "\n\n".join(
-        f"[{index}] {hit.chunk.document_title} / {hit.chunk.section}\n"
-        f"chunk_id={hit.chunk.chunk_id}\n{hit.chunk.text}"
-        for index, hit in enumerate(hits, start=1)
-    )
-    system_content = (
-        "你是电商平台 AI 客服。只能依据下方检索知识回答，不得编造活动、价格、库存、"
-        "订单、物流或售后结论；知识不足时明确说明。回答简洁，并使用 [C1]、[C2] 标注引用。"
-        f"\n当前意图：{intent_result.intent}\n检索知识：\n{knowledge}"
-    )
-    return [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_message},
-    ]
-
-
 class CustomerServiceAgent:
     """Customer-service agent with vector retrieval and verifiable citations."""
 
@@ -312,6 +275,8 @@ class CustomerServiceAgent:
         answer_base_url: str | None = None,
         answer_model_name: str | None = None,
         embedding_client: EmbeddingClient | None = None,
+        rerank_http_client: httpx.Client | None = None,
+        rerank_config: RerankConfig | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
@@ -324,6 +289,8 @@ class CustomerServiceAgent:
         self._answer_base_url = answer_base_url
         self._answer_model_name = answer_model_name
         self._embedding_client = embedding_client
+        self._rerank_http_client = rerank_http_client
+        self._rerank_config = rerank_config
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Classify, retrieve vectors, generate a grounded answer, and cite hits."""
@@ -340,18 +307,51 @@ class CustomerServiceAgent:
             model=self._classifier_model_name,
         )
 
-        raw_hits: list[KnowledgeHit] = []
+        rewrite = rewrite_retrieval_query(
+            request.user_message,
+            intent_result.intent,
+        )
+        original_candidates: list[KnowledgeHit] = []
+        rewritten_candidates: list[KnowledgeHit] = []
+        candidates: list[KnowledgeHit] = []
+        reranked_hits: list[KnowledgeHit] = []
         reliable_hits: list[KnowledgeHit] = []
         retrieval_error: str | None = None
+        rerank_mode = "skipped_general_chat"
+        rerank_model: str | None = None
+        rerank_error: str | None = None
         answer_path = "general_chat"
         low_confidence = False
         if intent_result.intent != "general_chat":
             try:
-                raw_hits = retrieve_knowledge(
-                    request.user_message, embedding_client=self._embedding_client
+                original_candidates = retrieve_candidates(
+                    request.user_message,
+                    embedding_client=self._embedding_client,
                 )
-                low_confidence = is_low_confidence(raw_hits)
-                reliable_hits = [] if low_confidence else raw_hits
+                rewritten_candidates = (
+                    retrieve_candidates(
+                        rewrite.rewritten_query,
+                        embedding_client=self._embedding_client,
+                    )
+                    if rewrite.applied
+                    else original_candidates
+                )
+                candidates = merge_candidates(
+                    original_candidates,
+                    rewritten_candidates,
+                )
+                rerank_outcome = rerank_candidates(
+                    rewrite.rewritten_query,
+                    candidates,
+                    config=self._rerank_config,
+                    http_client=self._rerank_http_client,
+                )
+                reranked_hits = rerank_outcome.hits
+                rerank_mode = rerank_outcome.mode
+                rerank_model = rerank_outcome.model
+                rerank_error = rerank_outcome.error
+                low_confidence = is_low_confidence(reranked_hits)
+                reliable_hits = [] if low_confidence else reranked_hits[:FINAL_TOP_K]
                 answer_path = (
                     "grounded_model" if reliable_hits else "low_confidence_fallback"
                 )
@@ -364,6 +364,7 @@ class CustomerServiceAgent:
                 ValueError,
             ) as exc:
                 retrieval_error = exc.__class__.__name__
+                rerank_mode = "skipped_retrieval_unavailable"
                 low_confidence = True
                 answer_path = "retrieval_unavailable"
 
@@ -371,6 +372,7 @@ class CustomerServiceAgent:
         messages = render_rag_messages(
             request.user_message,
             intent_result,
+            rewrite,
             reliable_hits,
         )
         if intent_result.intent == "general_chat":
@@ -407,7 +409,7 @@ class CustomerServiceAgent:
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
         chunks = load_knowledge_chunks()
-        top_score = raw_hits[0].score if raw_hits else 0.0
+        top_score = reranked_hits[0].score if reranked_hits else 0.0
         if intent_result.intent == "general_chat":
             confidence_level = "not_applicable"
             low_confidence_action = "general_chat_without_citations"
@@ -448,12 +450,13 @@ class CustomerServiceAgent:
         reasoning_summary = [
             "后端保持 user_message 与可信 runtime_* 分离，外部模型只接收业务问题。",
             "系统沿用规则优先、轻量分类模型兜底，得到稳定的结构化 intent。",
-            f"向量检索从 {len(chunks)} 个知识块召回 {len(raw_hits)} 个候选，再用 {LOW_CONFIDENCE_THRESHOLD} 判断是否足以回答。",
-            f"质量门槛保留 {len(reliable_hits)} 个可靠命中，并生成 {len(citations)} 条 citation。",
+            f"系统保留用户原话，并生成只用于检索的 rewritten_query；合并后得到 {len(candidates)} 个候选。",
+            f"候选经过 {rerank_mode} 重排，再用 {LOW_CONFIDENCE_THRESHOLD} 门槛选出 {len(reliable_hits)} 个可靠命中。",
+            f"最终可靠知识生成 {len(citations)} 条 citation；可信 Runtime Context 未进入外部检索或回答请求。",
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.8.0",
+            "agent_version": "0.9.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -464,25 +467,48 @@ class CustomerServiceAgent:
             },
             "model_answer": model_answer.model_dump(),
             "rag": {
-                "mode": "quality_checked_vector_retrieval",
-                "retrieval_strategy": "embedding_cosine_similarity",
+                "mode": "query_rewrite_with_reranker",
+                "retrieval_strategy": "dual_query_vector_retrieval_then_rerank",
                 "vector_search": True,
                 "embedding_model": read_embedding_model_name(),
-                "top_k": TOP_K,
+                "candidate_k": CANDIDATE_K,
+                "final_top_k": FINAL_TOP_K,
                 "score_threshold": RETRIEVAL_SCORE_THRESHOLD,
                 "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
                 "document_count": len({chunk.source_path for chunk in chunks}),
                 "chunk_count": len(chunks),
-                "raw_retrieved_count": len(raw_hits),
+                "rewrite": rewrite.model_dump(),
+                "original_candidate_count": len(original_candidates),
+                "rewritten_candidate_count": len(rewritten_candidates),
+                "candidate_count": len(candidates),
                 "retrieved_count": len(reliable_hits),
                 "citation_count": len(citations),
                 "confidence_level": confidence_level,
                 "top_score": top_score,
                 "low_confidence_action": low_confidence_action,
                 "answer_path": answer_path,
-                "raw_chunk_ids": [hit.chunk.chunk_id for hit in raw_hits],
+                "initial_top_chunk_id": (
+                    original_candidates[0].chunk.chunk_id
+                    if original_candidates
+                    else None
+                ),
+                "candidate_chunk_ids": [hit.chunk.chunk_id for hit in candidates],
+                "reranked_chunk_ids": [hit.chunk.chunk_id for hit in reranked_hits],
                 "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
-                "scores": {hit.chunk.chunk_id: hit.score for hit in raw_hits},
+                "rerank_mode": rerank_mode,
+                "rerank_model": rerank_model,
+                "rerank_error": rerank_error,
+                "rerank_reasons": {
+                    hit.chunk.chunk_id: hit.rerank_reasons for hit in reranked_hits
+                },
+                "scores": {
+                    hit.chunk.chunk_id: {
+                        "vector": hit.vector_score,
+                        "rerank": hit.rerank_score,
+                        "final": hit.score,
+                    }
+                    for hit in reranked_hits
+                },
                 "retrieval_error": retrieval_error,
             },
             "rag_quality": {
@@ -501,7 +527,7 @@ class CustomerServiceAgent:
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "当前只有固定问题集和阈值兜底；下一步需要继续提升召回、排序质量，并建立完整 Evaluation 回归平台。",
+            "next_gap": "查询改写和重排已经改善语义候选排序；下一步需要加入关键词与向量混合召回，覆盖规则编号和长尾精确词。",
         }
         return ChatResponse(
             session_id=request.session_id,
