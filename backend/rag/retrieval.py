@@ -6,7 +6,7 @@ import math
 import weakref
 
 from api.schemas import KnowledgeChunk, KnowledgeHit, VectorRecord
-from config.settings import SCORE_THRESHOLD, TOP_K
+from config.settings import RETRIEVAL_SCORE_THRESHOLD, TOP_K
 from embeddings.client import (
     DEFAULT_EMBEDDING_CLIENT,
     EmbeddingClient,
@@ -45,12 +45,7 @@ def build_vector_store(
     """Batch-embed source chunks into an in-process vector index."""
 
     source_chunks = chunks if chunks is not None else load_knowledge_chunks()
-    embedding_texts = [
-        " ".join(
-            [chunk.document_title, chunk.section, " ".join(chunk.keywords), chunk.text]
-        )
-        for chunk in source_chunks
-    ]
+    embedding_texts = [chunk_embedding_text(chunk) for chunk in source_chunks]
     embeddings = embed_texts(embedding_texts, embedding_client)
     if len(embeddings) != len(source_chunks):
         raise ValueError("知识片段与 Embedding 数量不一致。")
@@ -71,14 +66,22 @@ def get_vector_store(
     return _VECTOR_STORE_CACHE[client]
 
 
-def retrieve_by_vector(
+def chunk_embedding_text(chunk: KnowledgeChunk) -> str:
+    """Build the source-aware text sent to the embedding model."""
+
+    return " ".join(
+        [chunk.document_title, chunk.section, " ".join(chunk.keywords), chunk.text]
+    )
+
+
+def retrieve_knowledge(
     query: str,
     *,
     top_k: int = TOP_K,
-    threshold: float = SCORE_THRESHOLD,
+    threshold: float = RETRIEVAL_SCORE_THRESHOLD,
     embedding_client: EmbeddingClient | None = None,
 ) -> list[KnowledgeHit]:
-    """Return thresholded Top-K chunks for a query embedding."""
+    """Retrieve candidate chunks for a later answer-confidence decision."""
 
     query_embedding = embed_text(query, embedding_client)
     asks_for_history = query_asks_for_history(query)

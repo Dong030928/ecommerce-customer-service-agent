@@ -113,6 +113,37 @@ class Citation(BaseModel):
     snippet: str
 
 
+class RagQualityCase(BaseModel):
+    """One fixed retrieval-quality regression case."""
+
+    case_id: str
+    question: str
+    expected_chunk_ids: list[str]
+    must_fallback: bool = False
+
+
+class RagQualityCaseResult(BaseModel):
+    """Recall, precision, and fallback result for one fixed case."""
+
+    case_id: str
+    retrieved_chunk_ids: list[str]
+    expected_chunk_ids: list[str]
+    recall_at_k: float = Field(ge=0.0, le=1.0)
+    precision_at_k: float = Field(ge=0.0, le=1.0)
+    fallback: bool
+    passed: bool
+
+
+class RagQualitySummary(BaseModel):
+    """Lightweight aggregate over the fixed RAG quality set."""
+
+    total_cases: int = Field(ge=0)
+    passed_cases: int = Field(ge=0)
+    average_recall_at_k: float = Field(ge=0.0, le=1.0)
+    average_precision_at_k: float = Field(ge=0.0, le=1.0)
+    results: list[RagQualityCaseResult]
+
+
 class TokenUsage(BaseModel):
     """Normalized model-provider token usage."""
 
@@ -158,6 +189,11 @@ KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
 VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 Citation.model_rebuild()
+RagQualityCase.model_rebuild()
+RagQualityCaseResult.model_rebuild()
+RagQualitySummary.model_rebuild(
+    _types_namespace={"RagQualityCaseResult": RagQualityCaseResult}
+)
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,

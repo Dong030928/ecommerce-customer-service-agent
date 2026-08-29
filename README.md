@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.7.0
+## v0.8.0
 
 当前版本提供：
 
@@ -17,9 +17,13 @@
 - 使用固定长度与重叠窗口切分长章节，保留可追溯的 `chunk_id`；
 - 调用 OpenAI-compatible Embedding 接口批量生成向量并在进程内缓存；
 - 通过余弦相似度、分数阈值与 Top-K 执行真正的向量检索；
+- 将候选召回阈值与可回答置信阈值分开，避免把弱命中当成可靠依据；
 - 过滤非当前有效知识，只有明确查询历史时才召回历史规则；
 - 只把真实命中的知识块放入回答上下文，并返回顶层 `citations`；
-- 在 `session_state.rag` 暴露模型、阈值、命中 ID、分数与回答路径；
+- 低置信时清空 `citations`，使用补充信息或转人工的确定性兜底；
+- 使用固定问题集计算 `recall@k`、`precision@k` 和用例通过状态；
+- 在 `session_state.rag` 暴露候选阈值、低置信阈值、最高分和兜底动作；
+- 在 `session_state.rag_quality` 暴露固定问题集质量摘要；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
 - 返回输入、输出、总 token 与人民币估算成本；
 - 记录会话级成本观察事件；
@@ -28,7 +32,7 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本已经建立“稳定切片 → Embedding → 进程内向量索引 → 余弦相似度 Top-K → Grounded Answer → Citations”的完整 RAG 链路，并保留结构化意图、token 成本观察和 Runtime Context 隐私边界。向量索引目前只在单进程内缓存，尚未持久化；知识库也不能替代订单、物流、库存和售后业务接口。系统暂不提供业务工具、多轮记忆、工作流、人工审批和评测。
+当前版本已经建立“稳定切片 → Embedding → 候选召回 → 低置信判断 → Grounded Answer/Citations 或安全兜底”的 RAG 链路，并用固定问题集观察基础召回质量。它保留结构化意图、token 成本观察和 Runtime Context 隐私边界。固定问题集只是轻量质量检查，不是完整 Evaluation 平台；阈值需要在更换 Embedding 模型、知识文件或切片策略后重新校准。向量索引目前只在单进程内缓存，知识库也不能替代订单、物流、库存和售后业务接口。
 
 ## 项目结构
 
@@ -41,7 +45,8 @@ backend/
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
   embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
   models/       # OpenAI-compatible 分类和回答模型客户端
-  rag/          # 文档切片、进程内向量索引与相似度检索
+  rag/          # 文档切片、向量召回、质量检查与低置信判断
+  rag_quality_cases.json # 固定 RAG 质量问题集
   main.py       # FastAPI 应用入口
 ```
 
@@ -100,7 +105,7 @@ Set-Location backend
 - `citation_id`、`source_title` 和 `source_path`；
 - `section`、`chunk_id`、余弦相似度分数和原文片段。
 
-`session_state.rag` 会返回 `embedding_cosine_similarity` 检索策略、Embedding 模型、阈值、Top-K、知识块数量、命中 ID、分数、引用数量和回答路径。当前索引是进程内实现，不是独立向量数据库。
+`session_state.rag` 会返回 `embedding_cosine_similarity` 检索策略、Embedding 模型、候选入场阈值、低置信阈值、最高分、候选与可靠命中数量、引用数量及兜底动作。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。当前索引是进程内实现，不是独立向量数据库。
 
 顶层 `cost_summary` 继续返回：
 

@@ -14,13 +14,18 @@ from api.schemas import (
     IntentResult,
     KnowledgeHit,
 )
-from config.settings import SCORE_THRESHOLD, TOP_K
+from config.settings import (
+    LOW_CONFIDENCE_THRESHOLD,
+    RETRIEVAL_SCORE_THRESHOLD,
+    TOP_K,
+)
 from cost.observer import build_cost_summary
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from models.classifier_client import classify_intent_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from rag.knowledge_base import load_knowledge_chunks
-from rag.vector_store import retrieve_by_vector
+from rag.quality import is_low_confidence, run_rag_quality_check
+from rag.retrieval import retrieve_knowledge
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -243,6 +248,15 @@ def build_rag_fallback(intent_result: IntentResult, retrieved_count: int) -> str
     return build_answer(intent_result)
 
 
+def build_low_confidence_answer() -> str:
+    """Ask for clarification instead of turning a weak hit into a rule."""
+
+    return (
+        "我现在没有找到足够可靠的平台规则依据，不能直接给出结论。"
+        "请补充订单状态、商品名称或活动页面信息；如果问题涉及售后争议，建议转人工继续核验。"
+    )
+
+
 def build_citations(hits: list[KnowledgeHit]) -> list[Citation]:
     """Convert only actual retrieval hits into public citations."""
 
@@ -326,15 +340,21 @@ class CustomerServiceAgent:
             model=self._classifier_model_name,
         )
 
-        hits: list[KnowledgeHit] = []
+        raw_hits: list[KnowledgeHit] = []
+        reliable_hits: list[KnowledgeHit] = []
         retrieval_error: str | None = None
         answer_path = "general_chat"
+        low_confidence = False
         if intent_result.intent != "general_chat":
             try:
-                hits = retrieve_by_vector(
+                raw_hits = retrieve_knowledge(
                     request.user_message, embedding_client=self._embedding_client
                 )
-                answer_path = "grounded_model" if hits else "no_relevant_knowledge"
+                low_confidence = is_low_confidence(raw_hits)
+                reliable_hits = [] if low_confidence else raw_hits
+                answer_path = (
+                    "grounded_model" if reliable_hits else "low_confidence_fallback"
+                )
             except (
                 RuntimeError,
                 httpx.HTTPError,
@@ -344,12 +364,23 @@ class CustomerServiceAgent:
                 ValueError,
             ) as exc:
                 retrieval_error = exc.__class__.__name__
+                low_confidence = True
                 answer_path = "retrieval_unavailable"
 
-        citations = build_citations(hits)
-        messages = render_rag_messages(request.user_message, intent_result, hits)
-        fallback_answer = build_rag_fallback(intent_result, len(hits))
-        if hits:
+        citations = build_citations(reliable_hits)
+        messages = render_rag_messages(
+            request.user_message,
+            intent_result,
+            reliable_hits,
+        )
+        if intent_result.intent == "general_chat":
+            fallback_answer = build_answer(intent_result)
+        elif reliable_hits:
+            fallback_answer = build_rag_fallback(intent_result, len(reliable_hits))
+        else:
+            fallback_answer = build_low_confidence_answer()
+
+        if reliable_hits:
             model_answer = call_chat_model(
                 messages,
                 fallback_answer=fallback_answer,
@@ -371,20 +402,58 @@ class CustomerServiceAgent:
         event = {
             "message_count": message_count,
             "intent": intent_result.intent,
-            "matched_chunk_ids": [hit.chunk.chunk_id for hit in hits],
+            "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
             "cost_summary": cost_summary.model_dump(),
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
         chunks = load_knowledge_chunks()
+        top_score = raw_hits[0].score if raw_hits else 0.0
+        if intent_result.intent == "general_chat":
+            confidence_level = "not_applicable"
+            low_confidence_action = "general_chat_without_citations"
+        elif retrieval_error:
+            confidence_level = "unavailable"
+            low_confidence_action = "clarify_or_handoff"
+        elif low_confidence:
+            confidence_level = "low"
+            low_confidence_action = "clarify_or_handoff"
+        else:
+            confidence_level = "high"
+            low_confidence_action = "answer_with_citations"
+
+        quality_summary = None
+        quality_error: str | None = retrieval_error
+        quality_status = (
+            "skipped_general_chat"
+            if intent_result.intent == "general_chat"
+            else "skipped_retrieval_unavailable"
+        )
+        if intent_result.intent != "general_chat" and retrieval_error is None:
+            try:
+                quality_summary = run_rag_quality_check(
+                    embedding_client=self._embedding_client
+                )
+                quality_status = "completed"
+            except (
+                RuntimeError,
+                httpx.HTTPError,
+                KeyError,
+                IndexError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                quality_error = exc.__class__.__name__
+                quality_status = "unavailable"
+
         reasoning_summary = [
             "后端保持 user_message 与可信 runtime_* 分离，外部模型只接收业务问题。",
             "系统沿用规则优先、轻量分类模型兜底，得到稳定的结构化 intent。",
-            f"向量检索按余弦相似度阈值从 {len(chunks)} 个稳定知识块中选出 {len(hits)} 个 Top-K 结果。",
-            f"响应只为真实命中的知识块生成 {len(citations)} 条可核验 citation。",
+            f"向量检索从 {len(chunks)} 个知识块召回 {len(raw_hits)} 个候选，再用 {LOW_CONFIDENCE_THRESHOLD} 判断是否足以回答。",
+            f"质量门槛保留 {len(reliable_hits)} 个可靠命中，并生成 {len(citations)} 条 citation。",
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.7.0",
+            "agent_version": "0.8.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -395,26 +464,44 @@ class CustomerServiceAgent:
             },
             "model_answer": model_answer.model_dump(),
             "rag": {
-                "mode": "vector_retrieval",
+                "mode": "quality_checked_vector_retrieval",
                 "retrieval_strategy": "embedding_cosine_similarity",
                 "vector_search": True,
                 "embedding_model": read_embedding_model_name(),
                 "top_k": TOP_K,
-                "score_threshold": SCORE_THRESHOLD,
+                "score_threshold": RETRIEVAL_SCORE_THRESHOLD,
+                "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
                 "document_count": len({chunk.source_path for chunk in chunks}),
                 "chunk_count": len(chunks),
-                "retrieved_count": len(hits),
+                "raw_retrieved_count": len(raw_hits),
+                "retrieved_count": len(reliable_hits),
                 "citation_count": len(citations),
+                "confidence_level": confidence_level,
+                "top_score": top_score,
+                "low_confidence_action": low_confidence_action,
                 "answer_path": answer_path,
-                "matched_chunk_ids": [hit.chunk.chunk_id for hit in hits],
-                "scores": {hit.chunk.chunk_id: hit.score for hit in hits},
+                "raw_chunk_ids": [hit.chunk.chunk_id for hit in raw_hits],
+                "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
+                "scores": {hit.chunk.chunk_id: hit.score for hit in raw_hits},
                 "retrieval_error": retrieval_error,
+            },
+            "rag_quality": {
+                "status": quality_status,
+                "case_count": quality_summary.total_cases if quality_summary else 0,
+                "passed_cases": quality_summary.passed_cases if quality_summary else 0,
+                "average_recall_at_k": (
+                    quality_summary.average_recall_at_k if quality_summary else 0.0
+                ),
+                "average_precision_at_k": (
+                    quality_summary.average_precision_at_k if quality_summary else 0.0
+                ),
+                "error": quality_error,
             },
             "cost_log": {
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "当前向量索引只在进程内缓存；下一步需要持久化向量库，并接入订单、物流等实时业务工具。",
+            "next_gap": "当前只有固定问题集和阈值兜底；下一步需要继续提升召回、排序质量，并建立完整 Evaluation 回归平台。",
         }
         return ChatResponse(
             session_id=request.session_id,

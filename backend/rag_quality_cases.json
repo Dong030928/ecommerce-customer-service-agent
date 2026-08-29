@@ -1,0 +1,20 @@
+[
+  {
+    "case_id": "promotion-current-offer",
+    "question": "金卡会员买降噪耳机，会员价还能叠加优惠券吗？",
+    "expected_chunk_ids": ["promotion-current-audio-offer"],
+    "must_fallback": false
+  },
+  {
+    "case_id": "after-sale-day-eight",
+    "question": "我签收八天了，但是包装都没拆，能不能无理由退货？",
+    "expected_chunk_ids": ["after-sale-seven-day-return"],
+    "must_fallback": false
+  },
+  {
+    "case_id": "unknown-travel-booking",
+    "question": "电商客服能帮我订机票和酒店吗？",
+    "expected_chunk_ids": [],
+    "must_fallback": true
+  }
+]

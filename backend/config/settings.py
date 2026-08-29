@@ -11,6 +11,7 @@ from typing import Any
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 CAPABILITIES_PATH = BACKEND_DIR / "agent_capabilities.json"
 KNOWLEDGE_DIR = BACKEND_DIR / "knowledge"
+QUALITY_CASES_PATH = BACKEND_DIR / "rag_quality_cases.json"
 DEFAULT_ENV_PATH = BACKEND_DIR.parent / ".env"
 PLACEHOLDER_API_KEYS = {"", "你的模型平台 Key", "your-api-key", "YOUR_API_KEY"}
 DEFAULT_INPUT_CNY_PER_1K = 0.001
@@ -20,7 +21,9 @@ DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-4B"
 CHUNK_SIZE = 420
 CHUNK_OVERLAP = 80
 TOP_K = 2
-SCORE_THRESHOLD = 0.30
+RETRIEVAL_SCORE_THRESHOLD = 0.20
+# 该阈值判断最高分命中是否足以支撑回答，需要随模型和知识库重新校准。
+LOW_CONFIDENCE_THRESHOLD = 0.68
 
 
 def load_agent_capabilities() -> dict[str, Any]:

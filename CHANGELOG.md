@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- 将向量候选入场阈值和回答低置信阈值拆分，分别负责召回与可靠性判断；
+- 增加固定 RAG 问题集，覆盖当前活动、售后规则和知识库外问题；
+- 计算单条用例的 `recall@k`、`precision@k`、fallback 和通过状态；
+- 在 `session_state.rag_quality` 返回轻量质量汇总；
+- 低置信命中不再进入模型上下文，也不生成 citations；
+- 增加补充信息或转人工的确定性兜底，并暴露最高分、置信等级和兜底动作；
+- 保留结构化意图、模型 usage、成本观察和 Runtime Context 隐私边界。
+
 ## 0.7.0
 
 - 将 Markdown 章节切分为带来源、章节、metadata 和稳定 ID 的知识块；

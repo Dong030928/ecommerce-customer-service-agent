@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.7.0-vector-rag-citations",
-    "title": "Vector Retrieval With Citations",
-    "summary": "当前版本将 Markdown 切分为带来源元数据的稳定知识块，通过真实 Embedding 与余弦相似度完成 Top-K 检索，并为真实命中结果生成可核验引用。"
+    "id": "v0.8.0-rag-quality-fallback",
+    "title": "RAG Quality Check And Confidence Fallback",
+    "summary": "当前版本在向量检索与引用基础上增加固定问题集质量检查和低置信兜底，弱命中不会被包装成可靠依据。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.7.0"
+    "version": "0.8.0"
   },
   "endpoints": {
     "health": true,
@@ -32,6 +32,7 @@
     "vector_retrieval": true,
     "vector_search": true,
     "rag_citations": true,
+    "rag_quality_check": true,
     "tool_calls": false,
     "workflow": false,
     "human_approval": false,
