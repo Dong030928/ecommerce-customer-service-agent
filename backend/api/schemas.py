@@ -18,6 +18,15 @@ Intent = Literal[
     "complaint",
     "unknown",
 ]
+RetrievalScene = Literal[
+    "promotion",
+    "after_sale",
+    "shipping",
+    "product",
+    "order",
+    "complaint",
+    "unknown",
+]
 
 
 class ChatRequest(BaseModel):
@@ -95,11 +104,14 @@ class VectorRecord(BaseModel):
 
 
 class KnowledgeHit(BaseModel):
-    """Retrieved chunk with vector and optional reranking evidence."""
+    """Retrieved chunk with hybrid-retrieval and reranking evidence."""
 
     chunk: KnowledgeChunk
     score: float = Field(ge=0.0, le=1.0)
     vector_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    keyword_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    retrieval_sources: list[str] = Field(default_factory=list)
+    matched_keywords: list[str] = Field(default_factory=list)
     rerank_score: float | None = Field(default=None, ge=0.0, le=1.0)
     rerank_reasons: list[str] = Field(default_factory=list)
 
@@ -111,6 +123,17 @@ class QueryRewrite(BaseModel):
     rewritten_query: str
     applied: bool
     added_terms: list[str] = Field(default_factory=list)
+    reason: str
+
+
+class RetrievalPlan(BaseModel):
+    """Observable pre-retrieval routing and lexical-query plan."""
+
+    original_query: str
+    rewritten_query: str
+    scene: RetrievalScene
+    allowed_domains: list[str]
+    keyword_terms: list[str]
     reason: str
 
 
@@ -202,6 +225,7 @@ KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
 VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 QueryRewrite.model_rebuild()
+RetrievalPlan.model_rebuild(_types_namespace={"RetrievalScene": RetrievalScene})
 Citation.model_rebuild()
 RagQualityCase.model_rebuild()
 RagQualityCaseResult.model_rebuild()

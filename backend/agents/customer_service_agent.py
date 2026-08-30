@@ -16,6 +16,7 @@ from api.schemas import (
 from config.settings import (
     CANDIDATE_K,
     FINAL_TOP_K,
+    HYBRID_CANDIDATE_K,
     LOW_CONFIDENCE_THRESHOLD,
     RETRIEVAL_SCORE_THRESHOLD,
 )
@@ -25,10 +26,10 @@ from models.classifier_client import classify_intent_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from rag.knowledge_base import load_knowledge_chunks
 from rag.prompting import build_citations, render_rag_messages
+from rag.hybrid_retrieval import retrieve_hybrid_candidates
 from rag.quality import is_low_confidence, run_rag_quality_check
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
-from rag.retrieval import merge_candidates, retrieve_candidates
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -313,7 +314,9 @@ class CustomerServiceAgent:
         )
         original_candidates: list[KnowledgeHit] = []
         rewritten_candidates: list[KnowledgeHit] = []
+        keyword_candidates: list[KnowledgeHit] = []
         candidates: list[KnowledgeHit] = []
+        retrieval_plan = None
         reranked_hits: list[KnowledgeHit] = []
         reliable_hits: list[KnowledgeHit] = []
         retrieval_error: str | None = None
@@ -324,22 +327,16 @@ class CustomerServiceAgent:
         low_confidence = False
         if intent_result.intent != "general_chat":
             try:
-                original_candidates = retrieve_candidates(
-                    request.user_message,
+                retrieval_outcome = retrieve_hybrid_candidates(
+                    rewrite,
+                    intent_result.intent,
                     embedding_client=self._embedding_client,
                 )
-                rewritten_candidates = (
-                    retrieve_candidates(
-                        rewrite.rewritten_query,
-                        embedding_client=self._embedding_client,
-                    )
-                    if rewrite.applied
-                    else original_candidates
-                )
-                candidates = merge_candidates(
-                    original_candidates,
-                    rewritten_candidates,
-                )
+                retrieval_plan = retrieval_outcome.plan
+                original_candidates = retrieval_outcome.original_vector_hits
+                rewritten_candidates = retrieval_outcome.rewritten_vector_hits
+                keyword_candidates = retrieval_outcome.keyword_hits
+                candidates = retrieval_outcome.candidates
                 rerank_outcome = rerank_candidates(
                     rewrite.rewritten_query,
                     candidates,
@@ -450,13 +447,13 @@ class CustomerServiceAgent:
         reasoning_summary = [
             "后端保持 user_message 与可信 runtime_* 分离，外部模型只接收业务问题。",
             "系统沿用规则优先、轻量分类模型兜底，得到稳定的结构化 intent。",
-            f"系统保留用户原话，并生成只用于检索的 rewritten_query；合并后得到 {len(candidates)} 个候选。",
+            f"系统保留用户原话，生成检索改写与 pre-retrieval 场景计划；三路合并后得到 {len(candidates)} 个候选。",
             f"候选经过 {rerank_mode} 重排，再用 {LOW_CONFIDENCE_THRESHOLD} 门槛选出 {len(reliable_hits)} 个可靠命中。",
             f"最终可靠知识生成 {len(citations)} 条 citation；可信 Runtime Context 未进入外部检索或回答请求。",
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.9.0",
+            "agent_version": "0.10.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -467,19 +464,23 @@ class CustomerServiceAgent:
             },
             "model_answer": model_answer.model_dump(),
             "rag": {
-                "mode": "query_rewrite_with_reranker",
-                "retrieval_strategy": "dual_query_vector_retrieval_then_rerank",
+                "mode": "hybrid_rag_with_query_rewrite_and_reranker",
+                "retrieval_strategy": "pre_retrieval_then_dual_vector_and_keyword_merge_then_rerank",
                 "vector_search": True,
+                "keyword_search": True,
                 "embedding_model": read_embedding_model_name(),
                 "candidate_k": CANDIDATE_K,
+                "hybrid_candidate_k": HYBRID_CANDIDATE_K,
                 "final_top_k": FINAL_TOP_K,
                 "score_threshold": RETRIEVAL_SCORE_THRESHOLD,
                 "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
                 "document_count": len({chunk.source_path for chunk in chunks}),
                 "chunk_count": len(chunks),
                 "rewrite": rewrite.model_dump(),
+                "plan": retrieval_plan.model_dump() if retrieval_plan else None,
                 "original_candidate_count": len(original_candidates),
                 "rewritten_candidate_count": len(rewritten_candidates),
+                "keyword_candidate_count": len(keyword_candidates),
                 "candidate_count": len(candidates),
                 "retrieved_count": len(reliable_hits),
                 "citation_count": len(citations),
@@ -493,6 +494,13 @@ class CustomerServiceAgent:
                     else None
                 ),
                 "candidate_chunk_ids": [hit.chunk.chunk_id for hit in candidates],
+                "original_vector_chunk_ids": [
+                    hit.chunk.chunk_id for hit in original_candidates
+                ],
+                "rewritten_vector_chunk_ids": [
+                    hit.chunk.chunk_id for hit in rewritten_candidates
+                ],
+                "keyword_chunk_ids": [hit.chunk.chunk_id for hit in keyword_candidates],
                 "reranked_chunk_ids": [hit.chunk.chunk_id for hit in reranked_hits],
                 "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
                 "rerank_mode": rerank_mode,
@@ -504,8 +512,11 @@ class CustomerServiceAgent:
                 "scores": {
                     hit.chunk.chunk_id: {
                         "vector": hit.vector_score,
+                        "keyword": hit.keyword_score,
                         "rerank": hit.rerank_score,
                         "final": hit.score,
+                        "sources": hit.retrieval_sources,
+                        "matched_keywords": hit.matched_keywords,
                     }
                     for hit in reranked_hits
                 },
@@ -527,7 +538,7 @@ class CustomerServiceAgent:
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "查询改写和重排已经改善语义候选排序；下一步需要加入关键词与向量混合召回，覆盖规则编号和长尾精确词。",
+            "next_gap": "Hybrid RAG 已覆盖语义与长尾精确词；下一步需要实现知识版本驱动的索引更新与缓存失效。",
         }
         return ChatResponse(
             session_id=request.session_id,

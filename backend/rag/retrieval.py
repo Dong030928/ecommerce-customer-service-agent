@@ -80,6 +80,8 @@ def retrieve_candidates(
     top_k: int = CANDIDATE_K,
     threshold: float = RETRIEVAL_SCORE_THRESHOLD,
     embedding_client: EmbeddingClient | None = None,
+    allowed_domains: list[str] | None = None,
+    source: str = "vector",
 ) -> list[KnowledgeHit]:
     """Retrieve the wider vector candidate set used by the reranker."""
 
@@ -89,6 +91,9 @@ def retrieve_candidates(
     for record in get_vector_store(embedding_client):
         if not should_include_chunk_for_query(record.chunk, asks_for_history):
             continue
+        domain = str(record.chunk.metadata.get("domain") or "")
+        if allowed_domains is not None and domain not in allowed_domains:
+            continue
         score = cosine_similarity(query_embedding, record.embedding)
         if score >= threshold:
             rounded_score = round(max(0.0, min(1.0, score)), 3)
@@ -97,6 +102,7 @@ def retrieve_candidates(
                     chunk=record.chunk,
                     score=rounded_score,
                     vector_score=rounded_score,
+                    retrieval_sources=[source],
                 )
             )
     return sorted(
@@ -106,23 +112,54 @@ def retrieve_candidates(
     )[:top_k]
 
 
-def merge_candidates(*candidate_groups: list[KnowledgeHit]) -> list[KnowledgeHit]:
-    """Merge original-query and rewritten-query candidates by best vector score."""
+def merge_candidates(
+    *candidate_groups: list[KnowledgeHit],
+    top_k: int = CANDIDATE_K,
+) -> list[KnowledgeHit]:
+    """Merge vector and keyword candidates while preserving route evidence."""
 
     merged: dict[str, KnowledgeHit] = {}
     for group in candidate_groups:
         for hit in group:
             current = merged.get(hit.chunk.chunk_id)
-            hit_score = hit.vector_score if hit.vector_score is not None else hit.score
-            current_score = (
-                current.vector_score
-                if current is not None and current.vector_score is not None
-                else current.score if current is not None else -1.0
-            )
-            if current is None or hit_score > current_score:
+            if current is None:
                 merged[hit.chunk.chunk_id] = hit
+                continue
+            vector_scores = [
+                score
+                for score in [current.vector_score, hit.vector_score]
+                if score is not None
+            ]
+            keyword_scores = [
+                score
+                for score in [current.keyword_score, hit.keyword_score]
+                if score is not None
+            ]
+            vector_score = max(vector_scores) if vector_scores else None
+            keyword_score = max(keyword_scores) if keyword_scores else None
+            merged[hit.chunk.chunk_id] = current.model_copy(
+                update={
+                    "score": max(current.score, hit.score),
+                    "vector_score": vector_score,
+                    "keyword_score": keyword_score,
+                    "retrieval_sources": list(
+                        dict.fromkeys(
+                            [*current.retrieval_sources, *hit.retrieval_sources]
+                        )
+                    ),
+                    "matched_keywords": list(
+                        dict.fromkeys(
+                            [*current.matched_keywords, *hit.matched_keywords]
+                        )
+                    ),
+                }
+            )
     return sorted(
         merged.values(),
-        key=lambda hit: hit.vector_score if hit.vector_score is not None else hit.score,
+        key=lambda hit: max(
+            hit.vector_score or 0.0,
+            hit.keyword_score or 0.0,
+            hit.score,
+        ),
         reverse=True,
-    )[:CANDIDATE_K]
+    )[:top_k]

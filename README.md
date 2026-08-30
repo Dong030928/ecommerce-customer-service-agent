@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.9.0
+## v0.10.0
 
 当前版本提供：
 
@@ -28,6 +28,9 @@
 - 对“耳麦”“叠券”“促销”等口语表达进行可观测归一化；
 - 按意图补齐活动或售后检索词，但不读取可信 Runtime 身份字段；
 - 合并原始查询和改写查询的候选知识，避免单路检索遗漏；
+- 在检索前识别活动、售后、物流、商品、订单和投诉场景，并限制候选知识领域；
+- 增加精确关键词召回，补足“赠品”“包装盒”“压坏”等长尾边界词；
+- 合并原始向量、改写向量和关键词三路证据，并保留每条候选的来源和命中词；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
@@ -38,7 +41,7 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本已经建立“稳定切片 → 查询改写 → 原始/改写双路向量召回 → 候选合并 → Reranker → 低置信判断 → Grounded Answer/Citations 或安全兜底”的 RAG 链路，并用固定问题集观察基础质量。用户原话保持不变；Runtime Context 只保存在本地状态，不会被补写进 Embedding、Reranker 或回答模型请求。固定问题集仍是轻量检查，不是完整 Evaluation 平台。当前还没有关键词混合召回和版本化索引更新，知识库也不能替代订单、物流、库存和售后业务接口。
+当前版本已经建立“稳定切片 → 查询改写 → pre-retrieval 场景规划 → 原始/改写双路向量召回 + 关键词召回 → 候选合并 → Reranker → 低置信判断 → Grounded Answer/Citations 或安全兜底”的 Hybrid RAG 链路，并用固定问题集观察基础质量。用户原话保持不变；Runtime Context 只保存在本地状态，不会被补写进 Embedding、关键词检索、Reranker 或回答模型请求。关键词检索是透明的轻量精确词实现，不是完整 BM25/搜索引擎；固定问题集仍是轻量检查，不是完整 Evaluation 平台。当前还没有版本化索引更新，知识库也不能替代订单、物流、库存和售后业务接口。
 
 ## 项目结构
 
@@ -51,7 +54,7 @@ backend/
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
   embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
   models/       # OpenAI-compatible 分类和回答模型客户端
-  rag/          # 文档切片、查询改写、向量召回、重排与质量检查
+  rag/          # 文档切片、检索规划、混合召回、重排与质量检查
   rag_quality_cases.json # 固定 RAG 质量问题集
   main.py       # FastAPI 应用入口
 ```
@@ -77,6 +80,12 @@ Set-Location backend
 
 - 健康检查：`http://localhost:8000/health`
 - 接口文档：`http://localhost:8000/docs`
+
+无需模型 Key 的离线回归测试：
+
+```powershell
+python -m unittest discover -s tests -v
+```
 
 请求示例：
 
@@ -111,7 +120,7 @@ Set-Location backend
 - `citation_id`、`source_title` 和 `source_path`；
 - `section`、`chunk_id`、余弦相似度分数和原文片段。
 
-`session_state.rag` 会返回查询改写内容、原始与改写候选数量、合并候选、重排顺序、向量/重排/最终分数、reranker 模式和安全错误类型，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。当前索引是进程内实现，不是独立向量数据库。
+`session_state.rag` 会返回查询改写、检索场景、允许领域、关键词项、三路候选、重排顺序、向量/关键词/重排/最终分数、召回来源、reranker 模式和安全错误类型，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。当前索引是进程内实现，不是独立向量数据库。
 
 顶层 `cost_summary` 继续返回：
 

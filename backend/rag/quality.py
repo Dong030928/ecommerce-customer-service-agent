@@ -12,8 +12,9 @@ from api.schemas import (
 )
 from config.settings import LOW_CONFIDENCE_THRESHOLD, QUALITY_CASES_PATH
 from embeddings.client import EmbeddingClient
+from rag.hybrid_retrieval import retrieve_hybrid_candidates
+from rag.query_rewrite import rewrite_retrieval_query
 from rag.reranker import rerank_candidates_lightweight
-from rag.retrieval import retrieve_candidates
 
 
 def load_quality_cases() -> list[RagQualityCase]:
@@ -35,8 +36,16 @@ def evaluate_quality_case(
 ) -> RagQualityCaseResult:
     """Evaluate recall@k, precision@k, and fallback behavior for one case."""
 
-    candidates = retrieve_candidates(case.question, embedding_client=embedding_client)
-    hits = rerank_candidates_lightweight(case.question, candidates)
+    rewrite = rewrite_retrieval_query(case.question, "unknown")
+    outcome = retrieve_hybrid_candidates(
+        rewrite,
+        "unknown",
+        embedding_client=embedding_client,
+    )
+    hits = rerank_candidates_lightweight(
+        rewrite.rewritten_query,
+        outcome.candidates,
+    )
     fallback = is_low_confidence(hits)
     retrieved_ids = [] if fallback else [hit.chunk.chunk_id for hit in hits]
     expected = set(case.expected_chunk_ids)

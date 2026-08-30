@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.9.0-query-rewrite-reranker",
-    "title": "Query Rewrite And Reranker",
-    "summary": "当前版本保留用户原话，为检索单独生成改写查询，合并双路向量候选并通过轻量或商业 reranker 重排后再回答。"
+    "id": "v0.10.0-hybrid-rag",
+    "title": "Hybrid RAG",
+    "summary": "当前版本先生成检索场景计划，再合并原始/改写查询向量候选与关键词候选，统一重排后回答。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.9.0"
+    "version": "0.10.0"
   },
   "endpoints": {
     "health": true,
@@ -35,7 +35,9 @@
     "rag_quality_check": true,
     "query_rewrite": true,
     "reranker": true,
-    "hybrid_rag": false,
+    "hybrid_rag": true,
+    "keyword_retrieval": true,
+    "pre_retrieval": true,
     "rag_index_cache": false,
     "tool_calls": false,
     "workflow": false,
@@ -50,7 +52,6 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "hybrid_rag": "当前版本只有原始/改写查询的向量候选，尚未加入关键词混合召回。",
     "rag_index_cache": "当前只有进程内向量缓存，尚未实现知识与模型版本驱动的索引失效更新。",
     "tool_calls": "业务工具还没有接入。",
     "workflow": "售后工作流还没有接入。",

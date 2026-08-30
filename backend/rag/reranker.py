@@ -52,6 +52,12 @@ def explain_rerank_reasons(query: str, hit: KnowledgeHit) -> list[str]:
         reasons.append("结算页约束匹配")
     if domain != "promotion" and "活动" in query_text:
         reasons.append("非活动规则轻微降权")
+    if hit.keyword_score is not None and hit.matched_keywords:
+        reasons.append("精确关键词命中")
+    if "keyword" in hit.retrieval_sources and any(
+        source.endswith("vector") for source in hit.retrieval_sources
+    ):
+        reasons.append("向量与关键词双路命中")
     return reasons
 
 
@@ -63,10 +69,12 @@ def rerank_candidates_lightweight(
 
     reranked: list[KnowledgeHit] = []
     for hit in candidates:
-        vector_score = hit.vector_score if hit.vector_score is not None else hit.score
+        vector_score = hit.vector_score or 0.0
+        keyword_score = hit.keyword_score or 0.0
+        initial_score = max(vector_score, keyword_score, hit.score)
         # Reserve score headroom for reranking signals instead of saturating every
         # high-vector candidate at 1.0 before ordering can change.
-        score = vector_score * 0.60
+        score = initial_score * 0.60
         reasons = explain_rerank_reasons(query, hit)
         if "当前有效规则加权" in reasons:
             score += 0.22
@@ -78,12 +86,15 @@ def rerank_candidates_lightweight(
             score += 0.08
         if "非活动规则轻微降权" in reasons:
             score -= 0.08
+        if "精确关键词命中" in reasons:
+            score += 0.12
+        if "向量与关键词双路命中" in reasons:
+            score += 0.08
         final_score = round(max(0.0, min(1.0, score)), 3)
         reranked.append(
             hit.model_copy(
                 update={
                     "score": final_score,
-                    "vector_score": vector_score,
                     "rerank_score": final_score,
                     "rerank_reasons": reasons or ["保留向量初始分"],
                 }

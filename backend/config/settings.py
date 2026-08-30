@@ -21,8 +21,11 @@ DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-4B"
 CHUNK_SIZE = 420
 CHUNK_OVERLAP = 80
 CANDIDATE_K = 4
+KEYWORD_CANDIDATE_K = 4
+HYBRID_CANDIDATE_K = 6
 FINAL_TOP_K = 2
 RETRIEVAL_SCORE_THRESHOLD = 0.20
+KEYWORD_SCORE_THRESHOLD = 0.15
 # 重排后的最高分仍需通过可靠性门槛；更换模型或知识库后必须重新校准。
 LOW_CONFIDENCE_THRESHOLD = 0.50
 RERANK_MODEL_DEFAULT = "Qwen/Qwen3-Reranker-8B"
@@ -42,6 +45,10 @@ NORMALIZATION_RULES: list[tuple[str, str, str]] = [
     ("会员券", "优惠券", "把“会员券”归一为知识库里的“优惠券”"),
     ("能叠吗", "能否 叠加 优惠券", "把省略问法展开为优惠叠加问题"),
     ("促销", "活动", "把“促销”归一为活动规则用词"),
+    ("少一根", "少了 配件", "把配件缺失口语展开为售后检索词"),
+    ("线少了", "配件 少了", "把充电线缺失口语展开为售后检索词"),
+    ("盒子", "包装盒", "把“盒子”归一为售后规则中的“包装盒”"),
+    ("压了", "压坏", "把包装受压口语归一为“压坏”"),
 ]
 
 
