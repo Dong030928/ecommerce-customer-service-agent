@@ -103,6 +103,17 @@ class VectorRecord(BaseModel):
     embedding: list[float]
 
 
+class KnowledgeIndex(BaseModel):
+    """Versioned in-process snapshot of the parsed knowledge corpus."""
+
+    version: str
+    fingerprint: str
+    chunk_count: int = Field(ge=0)
+    document_count: int = Field(ge=0)
+    chunks_by_id: dict[str, KnowledgeChunk]
+    inverted_index: dict[str, list[str]]
+
+
 class KnowledgeHit(BaseModel):
     """Retrieved chunk with hybrid-retrieval and reranking evidence."""
 
@@ -135,6 +146,18 @@ class RetrievalPlan(BaseModel):
     allowed_domains: list[str]
     keyword_terms: list[str]
     reason: str
+
+
+class RetrievalCacheEntry(BaseModel):
+    """Cached retrieval evidence; final answers are intentionally excluded."""
+
+    index_version: str
+    embedding_identity: str
+    plan: RetrievalPlan
+    original_vector_hits: list[KnowledgeHit]
+    rewritten_vector_hits: list[KnowledgeHit]
+    keyword_hits: list[KnowledgeHit]
+    candidates: list[KnowledgeHit]
 
 
 class Citation(BaseModel):
@@ -223,9 +246,16 @@ IntentResult.model_rebuild(
 )
 KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
 VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
+KnowledgeIndex.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 KnowledgeHit.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
 QueryRewrite.model_rebuild()
 RetrievalPlan.model_rebuild(_types_namespace={"RetrievalScene": RetrievalScene})
+RetrievalCacheEntry.model_rebuild(
+    _types_namespace={
+        "KnowledgeHit": KnowledgeHit,
+        "RetrievalPlan": RetrievalPlan,
+    }
+)
 Citation.model_rebuild()
 RagQualityCase.model_rebuild()
 RagQualityCaseResult.model_rebuild()

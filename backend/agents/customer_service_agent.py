@@ -30,6 +30,7 @@ from rag.hybrid_retrieval import retrieve_hybrid_candidates
 from rag.quality import is_low_confidence, run_rag_quality_check
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
+from rag.planning import is_realtime_business_query
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -261,6 +262,15 @@ def build_low_confidence_answer() -> str:
     )
 
 
+def build_realtime_business_gap_answer() -> str:
+    """Keep per-user business state outside stable knowledge and its cache."""
+
+    return (
+        "这个问题涉及订单、物流、库存或退款进度等实时业务状态，"
+        "稳定知识库无法核验，当前也还没有接入业务查询工具，因此不能编造结果。"
+    )
+
+
 class CustomerServiceAgent:
     """Customer-service agent with vector retrieval and verifiable citations."""
 
@@ -317,6 +327,16 @@ class CustomerServiceAgent:
         keyword_candidates: list[KnowledgeHit] = []
         candidates: list[KnowledgeHit] = []
         retrieval_plan = None
+        retrieval_index = None
+        retrieval_cache: dict = {
+            "cacheable": False,
+            "scope": "hybrid_candidates_only",
+            "reason": "普通聊天不执行知识检索。",
+            "cache_hit": False,
+            "cache_key": None,
+            "entry_count": 0,
+            "embedding_identity_hash": None,
+        }
         reranked_hits: list[KnowledgeHit] = []
         reliable_hits: list[KnowledgeHit] = []
         retrieval_error: str | None = None
@@ -325,6 +345,7 @@ class CustomerServiceAgent:
         rerank_error: str | None = None
         answer_path = "general_chat"
         low_confidence = False
+        realtime_gap = False
         if intent_result.intent != "general_chat":
             try:
                 retrieval_outcome = retrieve_hybrid_candidates(
@@ -333,6 +354,8 @@ class CustomerServiceAgent:
                     embedding_client=self._embedding_client,
                 )
                 retrieval_plan = retrieval_outcome.plan
+                retrieval_index = retrieval_outcome.index
+                retrieval_cache = retrieval_outcome.cache
                 original_candidates = retrieval_outcome.original_vector_hits
                 rewritten_candidates = retrieval_outcome.rewritten_vector_hits
                 keyword_candidates = retrieval_outcome.keyword_hits
@@ -347,11 +370,15 @@ class CustomerServiceAgent:
                 rerank_mode = rerank_outcome.mode
                 rerank_model = rerank_outcome.model
                 rerank_error = rerank_outcome.error
-                low_confidence = is_low_confidence(reranked_hits)
+                realtime_gap = is_realtime_business_query(request.user_message)
+                low_confidence = realtime_gap or is_low_confidence(reranked_hits)
                 reliable_hits = [] if low_confidence else reranked_hits[:FINAL_TOP_K]
-                answer_path = (
-                    "grounded_model" if reliable_hits else "low_confidence_fallback"
-                )
+                if realtime_gap:
+                    answer_path = "realtime_business_tool_required"
+                else:
+                    answer_path = (
+                        "grounded_model" if reliable_hits else "low_confidence_fallback"
+                    )
             except (
                 RuntimeError,
                 httpx.HTTPError,
@@ -374,6 +401,8 @@ class CustomerServiceAgent:
         )
         if intent_result.intent == "general_chat":
             fallback_answer = build_answer(intent_result)
+        elif realtime_gap:
+            fallback_answer = build_realtime_business_gap_answer()
         elif reliable_hits:
             fallback_answer = build_rag_fallback(intent_result, len(reliable_hits))
         else:
@@ -405,7 +434,11 @@ class CustomerServiceAgent:
             "cost_summary": cost_summary.model_dump(),
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
-        chunks = load_knowledge_chunks()
+        chunks = (
+            list(retrieval_index.chunks_by_id.values())
+            if retrieval_index is not None
+            else load_knowledge_chunks()
+        )
         top_score = reranked_hits[0].score if reranked_hits else 0.0
         if intent_result.intent == "general_chat":
             confidence_level = "not_applicable"
@@ -413,6 +446,9 @@ class CustomerServiceAgent:
         elif retrieval_error:
             confidence_level = "unavailable"
             low_confidence_action = "clarify_or_handoff"
+        elif realtime_gap:
+            confidence_level = "not_applicable"
+            low_confidence_action = "business_tool_required"
         elif low_confidence:
             confidence_level = "low"
             low_confidence_action = "clarify_or_handoff"
@@ -448,12 +484,13 @@ class CustomerServiceAgent:
             "后端保持 user_message 与可信 runtime_* 分离，外部模型只接收业务问题。",
             "系统沿用规则优先、轻量分类模型兜底，得到稳定的结构化 intent。",
             f"系统保留用户原话，生成检索改写与 pre-retrieval 场景计划；三路合并后得到 {len(candidates)} 个候选。",
+            f"知识索引版本为 {retrieval_index.version if retrieval_index else 'not_applicable'}；稳定检索缓存命中为 {retrieval_cache['cache_hit']}。",
             f"候选经过 {rerank_mode} 重排，再用 {LOW_CONFIDENCE_THRESHOLD} 门槛选出 {len(reliable_hits)} 个可靠命中。",
             f"最终可靠知识生成 {len(citations)} 条 citation；可信 Runtime Context 未进入外部检索或回答请求。",
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.10.0",
+            "agent_version": "0.11.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -464,11 +501,11 @@ class CustomerServiceAgent:
             },
             "model_answer": model_answer.model_dump(),
             "rag": {
-                "mode": "hybrid_rag_with_query_rewrite_and_reranker",
-                "retrieval_strategy": "pre_retrieval_then_dual_vector_and_keyword_merge_then_rerank",
+                "mode": "hybrid_rag_with_versioned_index_cache",
+                "retrieval_strategy": "versioned_index_then_cached_hybrid_candidates_then_rerank",
                 "vector_search": True,
                 "keyword_search": True,
-                "embedding_model": read_embedding_model_name(),
+                "embedding_model": read_embedding_model_name(self._embedding_client),
                 "candidate_k": CANDIDATE_K,
                 "hybrid_candidate_k": HYBRID_CANDIDATE_K,
                 "final_top_k": FINAL_TOP_K,
@@ -476,6 +513,19 @@ class CustomerServiceAgent:
                 "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
                 "document_count": len({chunk.source_path for chunk in chunks}),
                 "chunk_count": len(chunks),
+                "index": (
+                    {
+                        "version": retrieval_index.version,
+                        "fingerprint": retrieval_index.fingerprint,
+                        "chunk_count": retrieval_index.chunk_count,
+                        "document_count": retrieval_index.document_count,
+                        "inverted_term_count": len(retrieval_index.inverted_index),
+                    }
+                    if retrieval_index
+                    else None
+                ),
+                "cache": retrieval_cache,
+                "realtime_gap": realtime_gap,
                 "rewrite": rewrite.model_dump(),
                 "plan": retrieval_plan.model_dump() if retrieval_plan else None,
                 "original_candidate_count": len(original_candidates),
@@ -538,7 +588,7 @@ class CustomerServiceAgent:
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "Hybrid RAG 已覆盖语义与长尾精确词；下一步需要实现知识版本驱动的索引更新与缓存失效。",
+            "next_gap": "索引版本与稳定检索缓存已经就绪；下一步需要接入订单、物流、库存和退款进度业务工具。",
         }
         return ChatResponse(
             session_id=request.session_id,

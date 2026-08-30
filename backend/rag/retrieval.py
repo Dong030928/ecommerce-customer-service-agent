@@ -3,27 +3,26 @@
 from __future__ import annotations
 
 import math
-import weakref
 
-from api.schemas import KnowledgeChunk, KnowledgeHit, VectorRecord
+from api.schemas import KnowledgeChunk, KnowledgeHit, KnowledgeIndex, VectorRecord
 from config.settings import CANDIDATE_K, RETRIEVAL_SCORE_THRESHOLD
 from embeddings.client import (
     DEFAULT_EMBEDDING_CLIENT,
     EmbeddingClient,
     embed_text,
     embed_texts,
+    read_embedding_cache_identity,
+)
+from rag.index_cache import (
+    get_cached_vector_store,
+    get_knowledge_index,
+    store_vector_store,
 )
 from rag.knowledge_base import (
     load_knowledge_chunks,
     query_asks_for_history,
     should_include_chunk_for_query,
 )
-
-
-_VECTOR_STORE_CACHE: weakref.WeakKeyDictionary[
-    EmbeddingClient,
-    list[VectorRecord],
-] = weakref.WeakKeyDictionary()
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -57,13 +56,22 @@ def build_vector_store(
 
 def get_vector_store(
     embedding_client: EmbeddingClient | None = None,
+    index: KnowledgeIndex | None = None,
 ) -> list[VectorRecord]:
-    """Build the vector index lazily and cache it by client instance."""
+    """Cache vectors by both knowledge version and embedding-provider identity."""
 
+    resolved_index = index or get_knowledge_index()
     client = embedding_client or DEFAULT_EMBEDDING_CLIENT
-    if client not in _VECTOR_STORE_CACHE:
-        _VECTOR_STORE_CACHE[client] = build_vector_store(embedding_client=client)
-    return _VECTOR_STORE_CACHE[client]
+    identity = read_embedding_cache_identity(client)
+    cached = get_cached_vector_store(resolved_index.version, identity)
+    if cached is not None:
+        return cached
+    records = build_vector_store(
+        chunks=list(resolved_index.chunks_by_id.values()),
+        embedding_client=client,
+    )
+    store_vector_store(resolved_index.version, identity, records)
+    return records
 
 
 def chunk_embedding_text(chunk: KnowledgeChunk) -> str:
@@ -80,6 +88,7 @@ def retrieve_candidates(
     top_k: int = CANDIDATE_K,
     threshold: float = RETRIEVAL_SCORE_THRESHOLD,
     embedding_client: EmbeddingClient | None = None,
+    index: KnowledgeIndex | None = None,
     allowed_domains: list[str] | None = None,
     source: str = "vector",
 ) -> list[KnowledgeHit]:
@@ -88,7 +97,7 @@ def retrieve_candidates(
     query_embedding = embed_text(query, embedding_client)
     asks_for_history = query_asks_for_history(query)
     hits: list[KnowledgeHit] = []
-    for record in get_vector_store(embedding_client):
+    for record in get_vector_store(embedding_client, index):
         if not should_include_chunk_for_query(record.chunk, asks_for_history):
             continue
         domain = str(record.chunk.metadata.get("domain") or "")

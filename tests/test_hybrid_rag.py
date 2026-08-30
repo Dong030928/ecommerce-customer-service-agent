@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import unittest
 
+import httpx
+
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
@@ -13,7 +15,17 @@ sys.path.insert(0, str(BACKEND_DIR))
 from agents.customer_service_agent import CustomerServiceAgent  # noqa: E402
 from api.schemas import ChatRequest  # noqa: E402
 from embeddings.client import EmbeddingClient  # noqa: E402
-from rag.hybrid_retrieval import retrieve_keyword_candidates  # noqa: E402
+from rag.hybrid_retrieval import (  # noqa: E402
+    retrieve_hybrid_candidates,
+    retrieve_keyword_candidates,
+)
+from rag.index_cache import (  # noqa: E402
+    cache_entry_count,
+    get_knowledge_index,
+    rebuild_knowledge_index,
+    reset_index_and_cache,
+)
+from rag.knowledge_base import load_knowledge_chunks  # noqa: E402
 from rag.planning import build_retrieval_plan  # noqa: E402
 from rag.quality import run_rag_quality_check  # noqa: E402
 from rag.query_rewrite import rewrite_retrieval_query  # noqa: E402
@@ -48,6 +60,12 @@ class FakeEmbeddingClient(EmbeddingClient):
 
 
 class HybridRagTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_index_and_cache()
+
+    def tearDown(self) -> None:
+        reset_index_and_cache()
+
     def test_plan_preserves_original_query_and_routes_promotion(self) -> None:
         rewrite = rewrite_retrieval_query(
             "耳麦会员价还能叠券吗？",
@@ -133,6 +151,162 @@ class HybridRagTests(unittest.TestCase):
         self.assertEqual(response.intent, "general_chat")
         self.assertEqual(response.session_state["rag"]["candidate_count"], 0)
         self.assertEqual(embedding_client.seen_texts, [])
+
+    def test_stable_hybrid_candidates_hit_cache_on_second_query(self) -> None:
+        embedding_client = FakeEmbeddingClient()
+        rewrite = rewrite_retrieval_query(
+            "耳机会员价还能叠加优惠券吗？",
+            "promotion_consult",
+        )
+
+        first = retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+        )
+        calls_after_first = len(embedding_client.seen_texts)
+        second = retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+        )
+
+        self.assertFalse(first.cache["cache_hit"])
+        self.assertTrue(second.cache["cache_hit"])
+        self.assertEqual(first.index.version, second.index.version)
+        self.assertEqual(first.candidates, second.candidates)
+        self.assertEqual(len(embedding_client.seen_texts), calls_after_first)
+
+    def test_realtime_business_query_is_never_put_in_retrieval_cache(self) -> None:
+        embedding_client = FakeEmbeddingClient()
+        rewrite = rewrite_retrieval_query("我的订单到哪了？", "order_query")
+
+        first = retrieve_hybrid_candidates(
+            rewrite,
+            "order_query",
+            embedding_client=embedding_client,
+        )
+        second = retrieve_hybrid_candidates(
+            rewrite,
+            "order_query",
+            embedding_client=embedding_client,
+        )
+
+        self.assertFalse(first.cache["cacheable"])
+        self.assertFalse(first.cache["cache_hit"])
+        self.assertFalse(second.cache["cache_hit"])
+        self.assertIsNone(first.cache["cache_key"])
+
+    def test_rebuild_changes_version_and_invalidates_dependent_caches(self) -> None:
+        embedding_client = FakeEmbeddingClient()
+        rewrite = rewrite_retrieval_query("耳机活动有什么优惠？", "promotion_consult")
+        retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+        )
+        original_index = get_knowledge_index()
+        self.assertGreater(cache_entry_count(), 0)
+        changed_chunks = load_knowledge_chunks()
+        changed_chunks[0] = changed_chunks[0].model_copy(
+            update={"text": changed_chunks[0].text + " 测试版知识变更。"}
+        )
+
+        rebuilt = rebuild_knowledge_index(changed_chunks)
+
+        self.assertNotEqual(original_index.version, rebuilt.version)
+        self.assertEqual(cache_entry_count(), 0)
+
+    def test_embedding_model_identity_uses_a_separate_cache_namespace(self) -> None:
+        embedding_client = FakeEmbeddingClient()
+        rewrite = rewrite_retrieval_query("耳机活动有什么优惠？", "promotion_consult")
+        first = retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+        )
+        embedding_client.model = "fake-embedding-v2"
+
+        second = retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+        )
+
+        self.assertFalse(first.cache["cache_hit"])
+        self.assertFalse(second.cache["cache_hit"])
+        self.assertNotEqual(
+            first.cache["embedding_identity_hash"],
+            second.cache["embedding_identity_hash"],
+        )
+
+    def test_agent_realtime_gap_has_no_citations_or_model_answer(self) -> None:
+        agent = CustomerServiceAgent(
+            embedding_client=FakeEmbeddingClient(),
+            answer_api_key="test-key-that-must-not-be-used",
+        )
+
+        response = agent.chat(
+            ChatRequest(
+                session_id="realtime-gap-test",
+                runtime_user_id="U1",
+                user_message="我的订单到哪了？",
+            )
+        )
+
+        self.assertEqual(response.citations, [])
+        self.assertTrue(response.session_state["rag"]["realtime_gap"])
+        self.assertFalse(response.session_state["rag"]["cache"]["cacheable"])
+        self.assertEqual(
+            response.session_state["rag"]["answer_path"],
+            "realtime_business_tool_required",
+        )
+        self.assertFalse(response.session_state["model_answer"]["used_model"])
+
+    def test_cached_candidates_do_not_cache_final_model_answer(self) -> None:
+        model_requests: list[httpx.Request] = []
+
+        def answer_handler(request: httpx.Request) -> httpx.Response:
+            model_requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "活动规则以结算页为准。[C1]"}}],
+                    "usage": {
+                        "prompt_tokens": 20,
+                        "completion_tokens": 8,
+                        "total_tokens": 28,
+                    },
+                },
+            )
+
+        answer_client = httpx.Client(transport=httpx.MockTransport(answer_handler))
+        agent = CustomerServiceAgent(
+            embedding_client=FakeEmbeddingClient(),
+            answer_http_client=answer_client,
+            answer_api_key="test-key",
+            answer_base_url="https://example.invalid/v1",
+        )
+        request = ChatRequest(
+            session_id="answer-cache-boundary",
+            runtime_user_id="PRIVATE-USER-ID",
+            runtime_nickname="PRIVATE-NICKNAME",
+            user_message="耳机会员价还能叠加优惠券吗？",
+        )
+        try:
+            first = agent.chat(request)
+            second = agent.chat(request)
+        finally:
+            answer_client.close()
+
+        self.assertFalse(first.session_state["rag"]["cache"]["cache_hit"])
+        self.assertTrue(second.session_state["rag"]["cache"]["cache_hit"])
+        self.assertEqual(len(model_requests), 2)
+        request_bodies = "\n".join(
+            request.content.decode("utf-8") for request in model_requests
+        )
+        self.assertNotIn("PRIVATE-USER-ID", request_bodies)
+        self.assertNotIn("PRIVATE-NICKNAME", request_bodies)
 
 
 if __name__ == "__main__":

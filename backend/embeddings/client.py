@@ -134,11 +134,35 @@ class EmbeddingClient:
 DEFAULT_EMBEDDING_CLIENT = EmbeddingClient()
 
 
-def read_embedding_model_name() -> str:
+def read_embedding_model_name(
+    embedding_client: EmbeddingClient | None = None,
+) -> str:
     """Expose the configured embedding model for diagnostics."""
 
     load_project_env()
-    return os.getenv("AGENT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+    client = embedding_client or DEFAULT_EMBEDDING_CLIENT
+    return client.model or os.getenv(
+        "AGENT_EMBEDDING_MODEL",
+        DEFAULT_EMBEDDING_MODEL,
+    )
+
+
+def read_embedding_cache_identity(
+    embedding_client: EmbeddingClient | None = None,
+) -> str:
+    """Return a secret-free provider/model identity for versioned vector caches."""
+
+    load_project_env()
+    client = embedding_client or DEFAULT_EMBEDDING_CLIENT
+    base_url = (
+        client.base_url
+        or os.getenv("AGENT_OPENAI_BASE_URL", DEFAULT_EMBEDDING_BASE_URL)
+    ).rstrip("/")
+    model = client.model or os.getenv(
+        "AGENT_EMBEDDING_MODEL",
+        DEFAULT_EMBEDDING_MODEL,
+    )
+    return f"{base_url}|{model}"
 
 
 def embed_text(

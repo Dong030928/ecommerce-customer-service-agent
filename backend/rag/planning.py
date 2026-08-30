@@ -139,3 +139,25 @@ def build_retrieval_plan(
         keyword_terms=keyword_terms,
         reason=reason,
     )
+
+
+def is_realtime_business_query(query: str) -> bool:
+    """Detect per-user business state that stable knowledge cannot answer or cache."""
+
+    normalized = normalize_query(query)
+    realtime_patterns = [
+        "我的订单",
+        "订单状态",
+        "订单到哪",
+        "快递到哪",
+        "物流到哪",
+        "物流状态",
+        "发货了吗",
+        "退款进度",
+        "退款到哪",
+        "退款到账",
+        "库存还有",
+        "有没有库存",
+        "还有货吗",
+    ]
+    return any(pattern in normalized for pattern in realtime_patterns)

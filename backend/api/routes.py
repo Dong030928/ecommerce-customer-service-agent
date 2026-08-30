@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from api.schemas import ChatRequest, ChatResponse
 from config.settings import load_agent_capabilities
+from rag.index_cache import get_knowledge_index
 
 
 def create_router(agent_provider: Any) -> APIRouter:
@@ -16,10 +17,16 @@ def create_router(agent_provider: Any) -> APIRouter:
     router = APIRouter()
 
     @router.get("/health")
-    def health() -> dict[str, str]:
+    def health() -> dict[str, str | int]:
         """Return service health and the current project version."""
 
-        return {"status": "ok", "version": "0.10.0"}
+        index = get_knowledge_index()
+        return {
+            "status": "ok",
+            "version": "0.11.0",
+            "rag_index_version": index.version,
+            "rag_index_chunks": index.chunk_count,
+        }
 
     @router.get("/capabilities")
     def capabilities() -> dict[str, Any]:
