@@ -126,6 +126,11 @@ class EcommerceClient:
                 message,
                 status_code=status_code,
             ) from exc
+        except httpx.TimeoutException as exc:
+            raise EcommerceClientError(
+                "business_timeout",
+                "电商业务系统响应超时。",
+            ) from exc
         except httpx.RequestError as exc:
             raise EcommerceClientError(
                 "business_service_unavailable",

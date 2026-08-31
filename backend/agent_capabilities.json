@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.14.0-tool-result-observation",
-    "title": "ToolResult And Safe Observation",
-    "summary": "当前版本隔离内部 ToolResult，把业务原始结果压缩成模型与响应可见的安全 Observation，并提供 next_action。"
+    "id": "v0.15.0-error-degradation",
+    "title": "Error Classification And Safe Degradation",
+    "summary": "当前版本为模型与工具失败提供稳定错误分类、只读超时有限重试、确定性降级话术和高风险写操作拦截。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.14.0"
+    "version": "0.15.0"
   },
   "endpoints": {
     "health": true,
@@ -56,7 +56,14 @@
     "observation_omitted_fields": true,
     "next_action": true,
     "model_answer_from_observation": true,
-    "degradation": false,
+    "error_category": true,
+    "tool_attempts": true,
+    "read_only_timeout_retry": true,
+    "deterministic_fallback": true,
+    "risk_level": true,
+    "needs_human_approval": true,
+    "high_risk_write_block": true,
+    "degradation": true,
     "workflow": false,
     "human_approval": false,
     "memory": false,
@@ -69,9 +76,8 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "degradation": "工具错误分类、重试和分级降级将在后续版本接入。",
     "workflow": "售后工作流还没有接入。",
-    "human_approval": "HITL 人工确认还没有接入。",
+    "human_approval": "当前只返回 needs_human_approval 和 transfer_to_human 边界，真实 HITL 审批流程还没有接入。",
     "memory": "多轮记忆还没有接入。",
     "hooks": "Hooks 治理还没有接入。",
     "trace": "Trace 公开轨迹还没有接入。",

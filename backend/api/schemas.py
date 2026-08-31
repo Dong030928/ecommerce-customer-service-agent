@@ -20,7 +20,24 @@ Intent = Literal[
     "unknown",
 ]
 ToolStatus = Literal["success", "error", "skipped"]
-NextAction = Literal["answer_user", "ask_clarification", "fallback_answer"]
+NextAction = Literal[
+    "answer_user",
+    "ask_clarification",
+    "fallback_answer",
+    "transfer_to_human",
+]
+RiskLevel = Literal["low", "medium", "high"]
+ErrorCategory = Literal[
+    "none",
+    "timeout",
+    "validation_error",
+    "not_found",
+    "forbidden",
+    "business_error",
+    "model_unavailable",
+    "system_error",
+    "high_risk_write_blocked",
+]
 ClarificationSource = Literal["model", "backend_fallback", "backend_guard"]
 RetrievalScene = Literal[
     "promotion",
@@ -71,6 +88,8 @@ class ToolSpec(BaseModel):
     description: str
     required: list[str]
     parameters_schema: dict[str, str]
+    read_only: bool = True
+    risk_level: RiskLevel = "low"
 
 
 class ToolAction(BaseModel):
@@ -88,6 +107,8 @@ class ToolResult(BaseModel):
     status: ToolStatus
     raw_payload: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
+    error_category: ErrorCategory = "none"
+    attempts: int = Field(default=1, ge=1)
     source: str = "ecommerce_backend"
 
 
@@ -102,6 +123,8 @@ class ToolObservation(BaseModel):
     next_action: NextAction = "answer_user"
     data: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
+    error_category: ErrorCategory = "none"
+    attempts: int = Field(default=1, ge=1)
     source: str = "ecommerce_backend"
 
 
@@ -110,6 +133,17 @@ class ToolCallRecord(BaseModel):
 
     action: ToolAction
     observation: ToolObservation
+    attempts: int = Field(default=1, ge=1)
+
+
+class DegradationState(BaseModel):
+    """Public-safe degradation decision for the current request."""
+
+    degraded: bool = False
+    error_category: ErrorCategory = "none"
+    retry_count: int = Field(default=0, ge=0)
+    fallback_used: bool = False
+    reason: str | None = None
 
 
 class ClarificationCandidate(BaseModel):
@@ -320,6 +354,9 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     clarification: ClarificationRequest | None = None
     next_action: NextAction = "answer_user"
+    risk_level: RiskLevel = "low"
+    needs_human_approval: bool = False
+    degraded: bool = False
     cost_summary: CostSummary
     reasoning_summary: list[str]
     session_state: dict[str, Any]
@@ -329,20 +366,28 @@ ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": Reasoni
 IntentResult.model_rebuild(
     _types_namespace={"Intent": Intent, "IntentSource": IntentSource}
 )
-ToolSpec.model_rebuild()
+ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
 ToolAction.model_rebuild(_types_namespace={"Any": Any})
 ToolResult.model_rebuild(
-    _types_namespace={"Any": Any, "ToolStatus": ToolStatus}
+    _types_namespace={
+        "Any": Any,
+        "ErrorCategory": ErrorCategory,
+        "ToolStatus": ToolStatus,
+    }
 )
 ToolObservation.model_rebuild(
     _types_namespace={
         "Any": Any,
+        "ErrorCategory": ErrorCategory,
         "NextAction": NextAction,
         "ToolStatus": ToolStatus,
     }
 )
 ToolCallRecord.model_rebuild(
     _types_namespace={"ToolAction": ToolAction, "ToolObservation": ToolObservation}
+)
+DegradationState.model_rebuild(
+    _types_namespace={"ErrorCategory": ErrorCategory}
 )
 ClarificationCandidate.model_rebuild()
 ClarificationRequest.model_rebuild(
@@ -381,6 +426,7 @@ ChatResponse.model_rebuild(
         "Intent": Intent,
         "IntentResult": IntentResult,
         "NextAction": NextAction,
+        "RiskLevel": RiskLevel,
         "ClarificationRequest": ClarificationRequest,
         "ToolCallRecord": ToolCallRecord,
     }

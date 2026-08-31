@@ -22,6 +22,12 @@ from config.settings import (
     RETRIEVAL_SCORE_THRESHOLD,
 )
 from cost.observer import build_cost_summary
+from degradation.fallbacks import (
+    degradation_from_tool_records,
+    fallback_message,
+    high_risk_degradation,
+    is_high_risk_write_request,
+)
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
@@ -391,6 +397,80 @@ class CustomerServiceAgent:
         self._clarification_base_url = clarification_base_url
         self._clarification_model_name = clarification_model_name
 
+    def _high_risk_response(
+        self,
+        request: ChatRequest,
+        intent_result: IntentResult,
+        message_count: int,
+    ) -> ChatResponse:
+        """Block writes before RAG or tool planning and request human review."""
+
+        degradation = high_risk_degradation()
+        answer = fallback_message(degradation.error_category)
+        messages = [
+            {"role": "system", "content": "高风险写操作必须人工复核。"},
+            {"role": "user", "content": request.user_message},
+        ]
+        cost_summary = build_cost_summary(messages, answer, None)
+        event = {
+            "message_count": message_count,
+            "intent": intent_result.intent,
+            "risk_level": "high",
+            "next_action": "transfer_to_human",
+            "cost_summary": cost_summary.model_dump(),
+        }
+        self._cost_events_by_session.setdefault(request.session_id, []).append(event)
+        return ChatResponse(
+            session_id=request.session_id,
+            answer=answer,
+            intent=intent_result.intent,
+            intent_result=intent_result,
+            citations=[],
+            tool_calls=[],
+            next_action="transfer_to_human",
+            risk_level="high",
+            needs_human_approval=True,
+            degraded=True,
+            cost_summary=cost_summary,
+            reasoning_summary=[
+                "后端在 RAG 和 Tool Calling 之前识别到退款、取消或赔付写请求。",
+                "当前版本只开放只读工具，未执行任何写操作。",
+                "请求已标记为高风险并转入人工确认边界。",
+            ],
+            session_state={
+                "agent_version": "0.15.0",
+                "message_count": message_count,
+                "runtime_context": {
+                    "user_id": request.runtime_user_id,
+                    "nickname": request.runtime_nickname,
+                    "member_level": request.runtime_member_level,
+                    "risk_level": request.runtime_risk_level,
+                    "page_context": public_runtime_context(request),
+                },
+                "degradation": degradation.model_dump(),
+                "risk_boundary": {
+                    "blocked": True,
+                    "risk_level": "high",
+                    "needs_human_approval": True,
+                    "write_executed": False,
+                    "workflow_started": False,
+                },
+                "tool_calling": {
+                    "create_agent": False,
+                    "skip_reason": "high_risk_write_blocked",
+                    "tool_call_count": 0,
+                    "raw_tool_result_exposed": False,
+                },
+                "rag": {"status": "skipped_high_risk_write", "realtime_gap": False},
+                "rag_quality": {"status": "skipped_high_risk_write"},
+                "cost_log": {
+                    "event_count": len(self._cost_events_by_session[request.session_id]),
+                    "latest": event,
+                },
+                "next_gap": "已建立高风险写操作边界；下一步接入可恢复的 Workflow 与真实 HITL 审批。",
+            },
+        )
+
     def _chat_with_tools(
         self,
         request: ChatRequest,
@@ -447,12 +527,23 @@ class CustomerServiceAgent:
             if clarification is not None
             else outcome.answer
         )
+        degradation = degradation_from_tool_records(
+            outcome.tool_calls,
+            model_error=outcome.error if clarification is None else None,
+        )
+        if clarification is None and degradation.degraded:
+            response_answer = fallback_message(degradation.error_category)
         if clarification is not None:
             next_action = "ask_clarification"
         elif outcome.tool_calls:
             next_action = outcome.tool_calls[-1].observation.next_action
         else:
             next_action = "fallback_answer"
+        risk_level = "medium" if any(
+            TOOL_SPECS[record.action.tool_name].risk_level == "medium"
+            for record in outcome.tool_calls
+            if record.action.tool_name in TOOL_SPECS
+        ) else "low"
         public_messages = [
             {
                 "role": "system",
@@ -468,6 +559,8 @@ class CustomerServiceAgent:
                 record.action.tool_name for record in outcome.tool_calls
             ],
             "next_action": next_action,
+            "error_category": degradation.error_category,
+            "retry_count": degradation.retry_count,
             "cost_summary": cost_summary.model_dump(),
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
@@ -492,10 +585,13 @@ class CustomerServiceAgent:
             tool_calls=outcome.tool_calls,
             clarification=clarification,
             next_action=next_action,
+            risk_level=risk_level,
+            needs_human_approval=False,
+            degraded=degradation.degraded,
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.14.0",
+                "agent_version": "0.15.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -510,6 +606,7 @@ class CustomerServiceAgent:
                     "fallback_reason": outcome.error,
                     "source": outcome.state.get("answer_source"),
                 },
+                "degradation": degradation.model_dump(),
                 "tool_calling": {
                     **outcome.state,
                     "clarification_plan": clarification_plan.model_dump(),
@@ -540,7 +637,7 @@ class CustomerServiceAgent:
                     ),
                     "latest": event,
                 },
-                "next_gap": "Observation 已受控压缩；下一步需要增加工具错误分类、重试与降级策略。",
+                "next_gap": "已支持错误分类、只读超时有限重试和安全降级；下一步接入可恢复的 Workflow 与真实 HITL 审批。",
             },
         )
 
@@ -558,6 +655,8 @@ class CustomerServiceAgent:
             base_url=self._classifier_base_url,
             model=self._classifier_model_name,
         )
+        if is_high_risk_write_request(request.user_message):
+            return self._high_risk_response(request, intent_result, message_count)
         if should_route_to_realtime_tool(
             intent_result.intent,
             request.user_message,
@@ -669,6 +768,16 @@ class CustomerServiceAgent:
             model_answer = ModelAnswerResult(
                 answer=fallback_answer, fallback_reason=answer_path
             )
+        degraded = retrieval_error is not None or (
+            bool(reliable_hits) and not model_answer.used_model
+        )
+        degradation_category = (
+            "system_error"
+            if retrieval_error is not None
+            else "model_unavailable"
+            if degraded
+            else "none"
+        )
 
         cost_summary = build_cost_summary(
             messages, model_answer.answer, model_answer.usage
@@ -736,7 +845,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.14.0",
+            "agent_version": "0.15.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -746,6 +855,13 @@ class CustomerServiceAgent:
                 "page_context": request.runtime_context or {},
             },
             "model_answer": model_answer.model_dump(),
+            "degradation": {
+                "degraded": degraded,
+                "error_category": degradation_category,
+                "retry_count": 0,
+                "fallback_used": degraded,
+                "reason": retrieval_error or model_answer.fallback_reason if degraded else None,
+            },
             "rag": {
                 "mode": "hybrid_rag_with_versioned_index_cache",
                 "retrieval_strategy": "versioned_index_then_cached_hybrid_candidates_then_rerank",
@@ -834,7 +950,7 @@ class CustomerServiceAgent:
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "Observation 已受控压缩；下一步需要增加工具错误分类、重试与降级策略。",
+            "next_gap": "已支持错误分类、只读超时有限重试和安全降级；下一步接入可恢复的 Workflow 与真实 HITL 审批。",
         }
         return ChatResponse(
             session_id=request.session_id,
@@ -844,6 +960,9 @@ class CustomerServiceAgent:
             citations=citations,
             tool_calls=[],
             next_action="answer_user",
+            risk_level="low",
+            needs_human_approval=False,
+            degraded=degraded,
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state=session_state,

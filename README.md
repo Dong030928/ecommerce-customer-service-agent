@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.14.0
+## v0.15.0
 
 当前版本提供：
 
@@ -53,7 +53,13 @@
 - 原始订单、物流、商品和退款 payload 只在后端内部短暂存在，不进入 LangChain 消息；
 - 按工具白名单压缩为安全摘要和关键 `facts`，并通过 `omitted_fields` 说明省略字段；
 - 完整物流轨迹、运单号、用户身份、订单备注、商品长描述和退款内部字段不会进入回答上下文；
-- 顶层返回 `next_action=answer_user/ask_clarification/fallback_answer`；
+- 顶层返回 `next_action=answer_user/ask_clarification/fallback_answer/transfer_to_human`；
+- 将工具失败归一为超时、参数错误、未找到、无权限、业务错误、模型不可用、系统错误等稳定类别；
+- 只读工具仅在超时时最多重试一次，并通过 `attempts` 与 `retry_count` 暴露实际尝试次数；
+- 参数错误、无权限、未找到和业务错误不会自动重试，避免无意义请求和副作用风险；
+- 工具或模型失败时使用确定性安全模板降级，不把异常详情、响应体或凭证交给模型；
+- 在 RAG 和 Tool Calling 前拦截直接退款、取消订单和赔付等高风险写请求，不执行写操作；
+- 顶层返回 `risk_level`、`needs_human_approval` 与 `degraded`，并用 `transfer_to_human` 表示人工边界；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -65,9 +71,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“ClarificationPlan → 后端参数复核 → 必要时用户确认 → LangChain 选择只读工具 → 注入可信用户身份 → 内部 ToolResult → 字段白名单压缩 → 安全 Observation → 必要时工具后澄清 → Grounded Answer”。Runtime Context 不进入 Embedding、缓存键或 Reranker；澄清模型只接收用户问题和缺失字段，不接收用户身份或订单候选，原始 ToolResult 不进入模型或公开响应，实时工具结果也不会伪装成知识引用。
+当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“风险边界 → ClarificationPlan → 后端参数复核 → 必要时用户确认 → LangChain 选择只读工具 → 注入可信用户身份 → 内部 ToolResult → 错误分类/有限重试 → 字段白名单压缩 → 安全 Observation → 必要时工具后澄清 → Grounded Answer/确定性降级”。Runtime Context 不进入 Embedding、缓存键或 Reranker；澄清模型只接收用户问题和缺失字段，不接收用户身份或订单候选，原始 ToolResult 不进入模型或公开响应，实时工具结果也不会伪装成知识引用。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参/多候选澄清、ToolResult 压缩和 `next_action`，但尚未实现工具错误分级、重试/降级、写操作审批或多轮澄清状态记忆。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参/多候选澄清、ToolResult 压缩、错误分类、超时有限重试和安全降级。高风险写请求只会被拦截并返回人工确认信号，尚未实现可恢复工作流、真实 HITL 审批或多轮澄清状态记忆。
 
 ## 项目结构
 
@@ -77,6 +83,7 @@ backend/
   api/          # HTTP 路由与请求响应契约
   config/       # 环境变量与能力清单
   cost/         # Token usage 解析与估算成本
+  degradation/  # 错误分类、有限重试决策、高风险边界与安全降级模板
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
   embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
   integrations/ # 电商业务后端客户端与安全错误映射
@@ -158,7 +165,9 @@ python -m unittest discover -s tests -v
 
 `session_state.rag` 会返回知识索引版本与指纹、缓存策略及命中状态、查询改写、检索场景、三路候选、向量/关键词/重排分数、召回来源和实时业务缺口，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。`/health` 也会返回当前索引版本和 chunk 数量。
 
-实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及由内部 ToolResult 压缩得到的 `observation`；Observation 只包含 `summary`、安全 `facts`、`omitted_fields`、`next_action` 和必要的安全候选数据。缺参或多候选时，顶层 `clarification` 返回 `clarification_field`、问题和安全候选项；顶层 `next_action` 告诉调用方应回答、继续澄清还是兜底。`session_state.tool_calling` 同时暴露后端校验后的计划、`pre_tool`/`post_tool` 阶段以及 `raw_tool_result_exposed=false`。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
+实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及由内部 ToolResult 压缩得到的 `observation`；Observation 只包含 `summary`、安全 `facts`、`omitted_fields`、`next_action`、`error_category`、`attempts` 和必要的安全候选数据。缺参或多候选时，顶层 `clarification` 返回 `clarification_field`、问题和安全候选项；顶层 `next_action` 告诉调用方应回答、继续澄清、安全兜底还是转人工。`session_state.degradation` 返回是否降级、稳定错误类别、重试次数、是否使用兜底和安全原因码。`session_state.tool_calling` 同时暴露后端校验后的计划、`pre_tool`/`post_tool` 阶段以及 `raw_tool_result_exposed=false`。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
+
+“直接退款、取消订单或赔付”等写请求会在任何检索或工具调用之前被拦截：响应返回 `risk_level=high`、`needs_human_approval=true`、`degraded=true` 和 `next_action=transfer_to_human`。这只是明确的人工接管边界，不代表已经创建工单、执行退款或完成 HITL 审批。
 
 运行中修改知识文件后，可重启服务或在受控维护流程中调用 `rebuild_knowledge_index()` 重建索引；项目不暴露无鉴权的 HTTP 重建接口。重建会原子替换索引快照，并清空依赖旧版本的向量和检索缓存。
 

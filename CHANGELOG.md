@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.0
+
+- 增加稳定 `ErrorCategory`，统一描述超时、参数错误、未找到、无权限、业务错误、模型不可用和系统错误；
+- 为 `ToolResult`、Observation 与 Action/Observation 记录增加实际 `attempts`；
+- 只读工具仅在业务超时时最多重试一次，其他错误立即进入确定性降级；
+- 电商客户端单独识别连接超时，同时继续隐藏网络详情、响应体和服务凭证；
+- 工具或模型失败时使用按错误类别映射的安全模板，不让模型猜测实时业务结果；
+- 在 RAG 与 Tool Calling 前拦截直接退款、取消订单和赔付等高风险写请求；
+- 顶层响应增加 `risk_level`、`needs_human_approval` 和 `degraded`，高风险写请求返回 `transfer_to_human`；
+- 保留 Hybrid RAG、Reranker、结构化澄清、ToolResult/Observation 隔离与可信身份注入链路；
+- 新增超时映射、有限重试、非超时不重试、写操作拦截、退款状态误判防护和模型不可用降级测试。
+
 ## 0.14.0
 
 - 增加内部 `ToolResult` 契约，原始业务 payload 只保留在后端工具执行边界；

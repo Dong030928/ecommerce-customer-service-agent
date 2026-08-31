@@ -15,6 +15,7 @@ ERROR_SUMMARIES = {
     "refund_request_id_invalid": "退款申请号格式无效。",
     "order_month_invalid": "订单月份必须是 1 到 12 的整数。",
     "business_access_denied": "业务系统拒绝了本次查询，请确认记录归属和服务身份。",
+    "business_timeout": "业务系统响应超时，有限重试后仍未取得可信结果。",
     "business_fact_not_found": "业务系统没有查到对应记录。",
     "business_service_unavailable": "业务系统暂时不可用，请稍后重试。",
     "business_request_failed": "业务事实查询失败，请核对参数后重试。",
@@ -61,6 +62,8 @@ def _error_observation(result: ToolResult) -> ToolObservation:
             next_action="ask_clarification",
             data={"candidates": candidates},
             error_code=error_code,
+            error_category=result.error_category,
+            attempts=result.attempts,
             source=result.source,
         )
 
@@ -91,6 +94,8 @@ def _error_observation(result: ToolResult) -> ToolObservation:
         next_action=next_action,
         data=safe_data,
         error_code=error_code,
+        error_category=result.error_category,
+        attempts=result.attempts,
         source=result.source,
     )
 
@@ -117,6 +122,7 @@ def _order_observation(result: ToolResult) -> ToolObservation:
         omitted_fields=_omitted_paths("order", order, allowed),
         next_action="answer_user",
         data={"order": facts},
+        attempts=result.attempts,
         source=result.source,
     )
 
@@ -166,6 +172,7 @@ def _logistics_observation(result: ToolResult) -> ToolObservation:
         omitted_fields=sorted(omitted),
         next_action="answer_user",
         data={"logistics": facts},
+        attempts=result.attempts,
         source=result.source,
     )
 
@@ -194,6 +201,7 @@ def _product_observation(result: ToolResult) -> ToolObservation:
         ),
         next_action="answer_user",
         data={"product": facts},
+        attempts=result.attempts,
         source=result.source,
     )
 
@@ -222,6 +230,7 @@ def _refund_observation(result: ToolResult) -> ToolObservation:
         ),
         next_action="answer_user",
         data={"refund": facts},
+        attempts=result.attempts,
         source=result.source,
     )
 
@@ -247,6 +256,7 @@ def _candidate_orders_observation(result: ToolResult) -> ToolObservation:
         omitted_fields=["currentUserOrders.* except candidate label/hint"],
         next_action=next_action,
         data={"candidate_orders": candidates},
+        attempts=result.attempts,
         source=result.source,
     )
 
@@ -273,6 +283,8 @@ def build_observation(result: ToolResult) -> ToolObservation:
             omitted_fields=sorted(result.raw_payload),
             next_action="fallback_answer",
             error_code="observation_rule_missing",
+            error_category="system_error",
+            attempts=result.attempts,
             source="observation_builder",
         )
     return builder(result)

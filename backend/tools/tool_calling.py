@@ -70,6 +70,7 @@ def _tool_records(messages: list[Any]) -> list[ToolCallRecord]:
                         reason=tool_action_reason(tool_name),
                     ),
                     observation=observation,
+                    attempts=observation.attempts,
                 )
             )
     return records
