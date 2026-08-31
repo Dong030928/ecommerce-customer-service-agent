@@ -79,6 +79,7 @@ SCENE_SIGNALS: list[tuple[RetrievalScene, list[str]]] = [
 INTENT_SCENES: dict[Intent, RetrievalScene] = {
     "promotion_consult": "promotion",
     "refund_request": "after_sale",
+    "refund_status_query": "after_sale",
     "order_query": "order",
     "complaint": "complaint",
     "product_consult": "product",

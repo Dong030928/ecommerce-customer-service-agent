@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import httpx
 from pydantic import BaseModel
@@ -20,6 +21,26 @@ class ModelAnswerResult(BaseModel):
     model_name: str | None = None
     fallback_reason: str | None = None
     usage: TokenUsage | None = None
+
+
+def create_tool_calling_model() -> Any:
+    """Create LangChain's OpenAI-compatible chat model only on the tool route."""
+
+    load_project_env()
+    api_key = os.getenv("AGENT_OPENAI_API_KEY")
+    if api_key_is_missing(api_key):
+        raise RuntimeError("缺少有效的 AGENT_OPENAI_API_KEY，无法执行模型 Tool Calling。")
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=os.getenv("AGENT_OPENAI_MODEL", "Qwen/Qwen3-8B"),
+        api_key=api_key,
+        base_url=os.getenv(
+            "AGENT_OPENAI_BASE_URL",
+            "https://api.siliconflow.cn/v1",
+        ).rstrip("/"),
+        temperature=0.1,
+    )
 
 
 def call_chat_model(

@@ -240,7 +240,7 @@ class HybridRagTests(unittest.TestCase):
             second.cache["embedding_identity_hash"],
         )
 
-    def test_agent_realtime_gap_has_no_citations_or_model_answer(self) -> None:
+    def test_agent_realtime_route_asks_for_missing_order_id_without_rag(self) -> None:
         agent = CustomerServiceAgent(
             embedding_client=FakeEmbeddingClient(),
             answer_api_key="test-key-that-must-not-be-used",
@@ -255,12 +255,12 @@ class HybridRagTests(unittest.TestCase):
         )
 
         self.assertEqual(response.citations, [])
-        self.assertTrue(response.session_state["rag"]["realtime_gap"])
-        self.assertFalse(response.session_state["rag"]["cache"]["cacheable"])
+        self.assertEqual(response.tool_calls, [])
         self.assertEqual(
-            response.session_state["rag"]["answer_path"],
-            "realtime_business_tool_required",
+            response.session_state["rag"]["status"],
+            "skipped_realtime_tool_route",
         )
+        self.assertIn("订单号", response.answer)
         self.assertFalse(response.session_state["model_answer"]["used_model"])
 
     def test_cached_candidates_do_not_cache_final_model_answer(self) -> None:

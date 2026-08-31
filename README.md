@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.11.0
+## v0.12.0
 
 当前版本提供：
 
@@ -36,6 +36,13 @@
 - 按“知识索引版本 + Embedding 服务/模型”复用知识向量，重建索引时统一失效；
 - 使用有容量上限的 LRU 缓存复用稳定知识的 Hybrid RAG 候选，不缓存最终回答；
 - 订单、物流、库存和退款进度等实时问题禁止进入检索缓存，也不会生成知识引用；
+- 通过受控电商业务客户端查询订单、物流、商品价格/库存和退款申请实时状态；
+- 使用 LangChain `create_agent` 让模型在四个只读工具 schema 中生成结构化调用；
+- 后端严格校验工具白名单、必填参数和业务编号格式，拒绝额外参数；
+- 模型不能提交或覆盖用户 ID，`runtime_user_id` 只由后端注入业务接口委托请求；
+- 对工具 Observation 进行字段白名单脱敏，回答只引用脱敏后的实时事实；
+- 顶层返回可观测的 `tool_calls` Action/Observation，实时路由不执行 RAG、不生成 citations；
+- 业务服务、工具依赖或模型调用不可用时安全降级，不猜测实时状态；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
@@ -46,7 +53,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本已经建立“稳定切片 → 版本化知识索引 → 查询改写 → pre-retrieval 场景规划 → 缓存检查 → 原始/改写双路向量召回 + 关键词召回 → 候选合并 → Reranker → 低置信判断 → Grounded Answer/Citations 或安全兜底”的 RAG 链路，并用固定问题集观察基础质量。缓存键同时包含知识版本、Embedding 身份和完整检索计划；索引重建会清空向量及检索缓存。用户原话保持不变，Runtime Context 不进入 Embedding、缓存键、Reranker 或回答模型请求。关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；当前索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。知识库不能替代订单、物流、库存和售后业务接口。
+当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“模型选择只读工具 → 后端校验 Action → 注入可信用户身份 → 电商接口 → 脱敏 Observation → 确定性回答”。Runtime Context 不进入 Embedding、缓存键、Reranker 或工具规划模型，实时工具结果也不会伪装成知识引用。
+
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询，缺少业务编号时使用确定性追问，尚未实现多候选结构化澄清、写操作审批或工具结果压缩。
 
 ## 项目结构
 
@@ -58,8 +67,10 @@ backend/
   cost/         # Token usage 解析与估算成本
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文
   embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
+  integrations/ # 电商业务后端客户端与安全错误映射
   models/       # OpenAI-compatible 分类和回答模型客户端
   rag/          # 文档切片、版本化索引、检索缓存、混合召回、重排与质量检查
+  tools/        # 只读工具契约、规划、可信执行与 LangChain Tool Calling
   rag_quality_cases.json # 固定 RAG 质量问题集
   main.py       # FastAPI 应用入口
 ```
@@ -74,7 +85,14 @@ py -3.13 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中配置真实的 `AGENT_OPENAI_API_KEY`；`AGENT_EMBEDDING_MODEL` 可单独指定向量模型。默认使用轻量重排；如需商业 reranker，可将 `AGENT_RAG_RERANK_ENABLED` 设为 `1` 并配置对应地址、模型和可选独立 Key。不要把密钥提交到 Git。然后启动：
+在 `.env` 中配置真实的 `AGENT_OPENAI_API_KEY`；`AGENT_EMBEDDING_MODEL` 可单独指定向量模型。实时业务查询还需要启动配套电商后端，并配置：
+
+```dotenv
+AGENT_ECOMMERCE_BASE_URL=http://127.0.0.1:8081
+AGENT_ECOMMERCE_SERVICE_TOKEN=replace-me
+```
+
+服务令牌必须与电商后端一致，不要把真实令牌提交到 Git。默认使用轻量重排；如需商业 reranker，可将 `AGENT_RAG_RERANK_ENABLED` 设为 `1` 并配置对应地址、模型和可选独立 Key。然后启动：
 
 ```powershell
 Set-Location backend
@@ -126,6 +144,8 @@ python -m unittest discover -s tests -v
 - `section`、`chunk_id`、余弦相似度分数和原文片段。
 
 `session_state.rag` 会返回知识索引版本与指纹、缓存策略及命中状态、查询改写、检索场景、三路候选、向量/关键词/重排分数、召回来源和实时业务缺口，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。`/health` 也会返回当前索引版本和 chunk 数量。
+
+实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及来自电商业务接口、经过脱敏的 `observation`。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
 
 运行中修改知识文件后，可重启服务或在受控维护流程中调用 `rebuild_knowledge_index()` 重建索引；项目不暴露无鉴权的 HTTP 重建接口。重建会原子替换索引快照，并清空依赖旧版本的向量和检索缓存。
 

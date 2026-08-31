@@ -15,9 +15,11 @@ Intent = Literal[
     "product_consult",
     "order_query",
     "refund_request",
+    "refund_status_query",
     "complaint",
     "unknown",
 ]
+ToolStatus = Literal["success", "error", "skipped"]
 RetrievalScene = Literal[
     "promotion",
     "after_sale",
@@ -58,6 +60,41 @@ class IntentResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     matched_keywords: list[str] = Field(default_factory=list)
     explanation: str
+
+
+class ToolSpec(BaseModel):
+    """Public-safe contract shown to the model before it proposes a tool call."""
+
+    name: str
+    description: str
+    required: list[str]
+    parameters_schema: dict[str, str]
+
+
+class ToolAction(BaseModel):
+    """Model-proposed tool name and arguments before backend validation."""
+
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str
+
+
+class ToolObservation(BaseModel):
+    """Sanitized result returned by the controlled backend tool runtime."""
+
+    tool_name: str
+    status: ToolStatus
+    summary: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    error_code: str | None = None
+    source: str = "ecommerce_backend"
+
+
+class ToolCallRecord(BaseModel):
+    """Observable Action/Observation pair derived from the tool loop."""
+
+    action: ToolAction
+    observation: ToolObservation
 
 
 class SourceDocument(BaseModel):
@@ -235,6 +272,7 @@ class ChatResponse(BaseModel):
     intent: Intent
     intent_result: IntentResult
     citations: list[Citation] = Field(default_factory=list)
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     cost_summary: CostSummary
     reasoning_summary: list[str]
     session_state: dict[str, Any]
@@ -243,6 +281,14 @@ class ChatResponse(BaseModel):
 ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": ReasoningView})
 IntentResult.model_rebuild(
     _types_namespace={"Intent": Intent, "IntentSource": IntentSource}
+)
+ToolSpec.model_rebuild()
+ToolAction.model_rebuild(_types_namespace={"Any": Any})
+ToolObservation.model_rebuild(
+    _types_namespace={"Any": Any, "ToolStatus": ToolStatus}
+)
+ToolCallRecord.model_rebuild(
+    _types_namespace={"ToolAction": ToolAction, "ToolObservation": ToolObservation}
 )
 KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
 VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
@@ -269,5 +315,6 @@ ChatResponse.model_rebuild(
         "Citation": Citation,
         "Intent": Intent,
         "IntentResult": IntentResult,
+        "ToolCallRecord": ToolCallRecord,
     }
 )

@@ -31,6 +31,14 @@ from rag.quality import is_low_confidence, run_rag_quality_check
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
 from rag.planning import is_realtime_business_query
+from tools.planning import (
+    extract_order_id,
+    extract_refund_request_id,
+    extract_sku,
+    should_route_to_realtime_tool,
+)
+from tools.runtime_context import public_runtime_context
+from tools.tool_calling import ToolCallingService
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -44,6 +52,11 @@ INTENT_RULES: list[tuple[Intent, list[str], str]] = [
         "complaint",
         ["投诉", "举报", "赔偿", "曝光", "315", "别踢皮球"],
         "用户表达了投诉、赔偿或强烈不满，规则高置信标记为投诉类消息。",
+    ),
+    (
+        "refund_status_query",
+        ["退款进度", "退款到哪", "退款到账", "退到哪"],
+        "用户在查询已有退款申请的实时进度，必须交给只读业务工具核验。",
     ),
     (
         "refund_request",
@@ -133,6 +146,30 @@ def plan_intent_by_rules(user_message: str) -> IntentResult | None:
             explanation=complaint[3],
         )
 
+    refund_status = next(
+        (item for item in active_evidence if item[0] == "refund_status_query"),
+        None,
+    )
+    if refund_status:
+        return IntentResult(
+            intent="refund_status_query",
+            source="rules",
+            confidence=0.95,
+            matched_keywords=refund_status[1],
+            explanation=refund_status[3],
+        )
+
+    if extract_refund_request_id(message) and any(
+        term in message for term in ["退款", "状态", "进度", "到账"]
+    ):
+        return IntentResult(
+            intent="refund_status_query",
+            source="rules",
+            confidence=0.95,
+            matched_keywords=["显式退款申请号"],
+            explanation="用户提供了退款申请号并查询实时状态，规则高置信路由到只读退款工具。",
+        )
+
     refund = next(
         (item for item in active_evidence if item[0] == "refund_request"), None
     )
@@ -143,6 +180,28 @@ def plan_intent_by_rules(user_message: str) -> IntentResult | None:
             confidence=0.95,
             matched_keywords=refund[1],
             explanation=refund[3],
+        )
+
+    if extract_order_id(message) and any(
+        term in message for term in ["订单", "状态", "物流", "快递", "发货", "运单"]
+    ):
+        return IntentResult(
+            intent="order_query",
+            source="rules",
+            confidence=0.95,
+            matched_keywords=["显式订单号"],
+            explanation="用户提供了订单号并查询实时状态，规则高置信路由到只读订单工具。",
+        )
+
+    if extract_sku(message) and any(
+        term in message for term in ["库存", "价格", "多少钱", "还有货", "有没有货", "现价"]
+    ):
+        return IntentResult(
+            intent="product_consult",
+            source="rules",
+            confidence=0.95,
+            matched_keywords=["显式 SKU"],
+            explanation="用户提供了 SKU 并查询实时价格或库存，规则高置信路由到只读商品工具。",
         )
 
     core_evidence = [
@@ -236,6 +295,7 @@ def build_answer(intent_result: IntentResult) -> str:
     answers = {
         "complaint": "我已经识别到你的投诉诉求，但当前无法调用知识检索，暂时不能承诺赔偿或处理结果。",
         "refund_request": "我已经识别到你的退款或售后诉求，但当前没有检索到可核验规则，暂时不能判断是否可退。",
+        "refund_status_query": "退款进度属于实时业务事实，需要通过只读退款工具核验。",
         "order_query": "我已经识别到订单或物流查询，但实时状态需要订单工具，不能根据知识库编造物流节点。",
         "promotion_consult": "我已经识别到优惠活动咨询，但当前没有检索到可核验规则，暂时不能承诺具体优惠。",
         "product_consult": "我已经识别到商品咨询，但当前没有检索到可核验资料，暂时不能编造商品卖点。",
@@ -288,6 +348,7 @@ class CustomerServiceAgent:
         embedding_client: EmbeddingClient | None = None,
         rerank_http_client: httpx.Client | None = None,
         rerank_config: RerankConfig | None = None,
+        tool_calling_service: ToolCallingService | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
@@ -302,6 +363,90 @@ class CustomerServiceAgent:
         self._embedding_client = embedding_client
         self._rerank_http_client = rerank_http_client
         self._rerank_config = rerank_config
+        self._tool_calling_service = tool_calling_service or ToolCallingService()
+
+    def _chat_with_tools(
+        self,
+        request: ChatRequest,
+        intent_result: IntentResult,
+        message_count: int,
+    ) -> ChatResponse:
+        """Run realtime reads without sending trusted identity to the planning model."""
+
+        outcome = self._tool_calling_service.run(request, intent_result.intent)
+        public_messages = [
+            {
+                "role": "system",
+                "content": "实时业务事实必须通过后端受控的只读工具核验。",
+            },
+            {"role": "user", "content": request.user_message},
+        ]
+        cost_summary = build_cost_summary(public_messages, outcome.answer, None)
+        event = {
+            "message_count": message_count,
+            "intent": intent_result.intent,
+            "tool_names": [
+                record.action.tool_name for record in outcome.tool_calls
+            ],
+            "cost_summary": cost_summary.model_dump(),
+        }
+        self._cost_events_by_session.setdefault(request.session_id, []).append(event)
+        reasoning_summary = [
+            "实时事实与稳定知识已分流，本轮不使用 RAG 猜测业务状态。",
+            "规划模型只接收用户问题和只读工具 schema，不接收 runtime_user_id。",
+            "后端校验工具名与参数，并从可信 Runtime Context 注入当前用户身份。",
+            f"本轮得到 {len(outcome.tool_calls)} 条经过脱敏的 Action/Observation 记录。",
+        ]
+        return ChatResponse(
+            session_id=request.session_id,
+            answer=outcome.answer,
+            intent=intent_result.intent,
+            intent_result=intent_result,
+            citations=[],
+            tool_calls=outcome.tool_calls,
+            cost_summary=cost_summary,
+            reasoning_summary=reasoning_summary,
+            session_state={
+                "agent_version": "0.12.0",
+                "message_count": message_count,
+                "runtime_context": {
+                    "user_id": request.runtime_user_id,
+                    "nickname": request.runtime_nickname,
+                    "member_level": request.runtime_member_level,
+                    "risk_level": request.runtime_risk_level,
+                    "page_context": public_runtime_context(request),
+                },
+                "model_answer": {
+                    "used_model": outcome.used_model,
+                    "model_name": outcome.model_name,
+                    "fallback_reason": outcome.error,
+                    "source": outcome.state.get("answer_source"),
+                },
+                "tool_calling": {
+                    **outcome.state,
+                    "tool_call_count": len(outcome.tool_calls),
+                    "actions": [
+                        record.action.model_dump() for record in outcome.tool_calls
+                    ],
+                    "observations": [
+                        record.observation.model_dump()
+                        for record in outcome.tool_calls
+                    ],
+                },
+                "rag": {
+                    "status": "skipped_realtime_tool_route",
+                    "realtime_gap": False,
+                },
+                "rag_quality": {"status": "skipped_realtime_tool_route"},
+                "cost_log": {
+                    "event_count": len(
+                        self._cost_events_by_session[request.session_id]
+                    ),
+                    "latest": event,
+                },
+                "next_gap": "只读工具已经可调用；下一步需要处理缺参数、多候选和结构化澄清。",
+            },
+        )
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Classify, retrieve vectors, generate a grounded answer, and cite hits."""
@@ -317,6 +462,11 @@ class CustomerServiceAgent:
             base_url=self._classifier_base_url,
             model=self._classifier_model_name,
         )
+        if should_route_to_realtime_tool(
+            intent_result.intent,
+            request.user_message,
+        ):
+            return self._chat_with_tools(request, intent_result, message_count)
 
         rewrite = rewrite_retrieval_query(
             request.user_message,
@@ -490,7 +640,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.11.0",
+            "agent_version": "0.12.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -596,6 +746,7 @@ class CustomerServiceAgent:
             intent=intent_result.intent,
             intent_result=intent_result,
             citations=citations,
+            tool_calls=[],
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state=session_state,
