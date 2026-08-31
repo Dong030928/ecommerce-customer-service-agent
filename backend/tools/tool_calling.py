@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from api.schemas import (
     ChatRequest,
+    ClarificationPlan,
     Intent,
     ToolAction,
     ToolCallRecord,
@@ -16,7 +17,6 @@ from config.settings import TOOL_CALLING_RECURSION_LIMIT
 from models.llm_client import create_tool_calling_model
 from tools.contracts import TOOL_SPECS
 from tools.langchain_tools import build_langchain_tools, tool_action_reason
-from tools.planning import missing_reference_prompt
 from tools.tool_runtime import ToolRuntime
 
 
@@ -103,22 +103,18 @@ class ToolCallingService:
         self._runtime = runtime or ToolRuntime()
         self._model_factory = model_factory or create_tool_calling_model
 
-    def run(self, request: ChatRequest, intent: Intent) -> ToolCallingOutcome:
-        missing_prompt = missing_reference_prompt(intent, request.user_message)
+    def run(
+        self,
+        request: ChatRequest,
+        intent: Intent,
+        clarification_plan: ClarificationPlan | None = None,
+    ) -> ToolCallingOutcome:
         available_tools = [spec.model_dump() for spec in TOOL_SPECS.values()]
-        if missing_prompt:
-            return ToolCallingOutcome(
-                answer=missing_prompt,
-                tool_calls=[],
-                state={
-                    "create_agent": False,
-                    "skip_reason": "missing_required_business_reference",
-                    "available_tools": available_tools,
-                    "message_types": [],
-                    "answer_source": "deterministic_parameter_guard",
-                },
-                used_model=False,
-            )
+        plan_hint = (
+            clarification_plan.model_dump_json()
+            if clarification_plan is not None
+            else "未提供预校验计划"
+        )
         try:
             from langchain.agents import create_agent
 
@@ -132,6 +128,8 @@ class ToolCallingService:
                     "必须通过给定只读工具核验。只能提交工具契约声明的参数，不能提交、"
                     "猜测或覆盖 user_id；当前用户身份由后端从可信 Runtime Context 注入。"
                     "不要调用写操作，也不要根据知识库猜实时状态。"
+                    "后端预校验的 ClarificationPlan 如下；必须使用其中的目标工具和"
+                    f"known_arguments，不得替换候选：{plan_hint}"
                 ),
             )
             result = agent.invoke(
@@ -152,6 +150,7 @@ class ToolCallingService:
                     ],
                     "answer_source": "sanitized_tool_observation",
                     "model_final_wording_used": False,
+                    "validated_plan_used": clarification_plan is not None,
                 },
                 used_model=True,
                 model_name=model_name,

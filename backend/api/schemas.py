@@ -20,6 +20,7 @@ Intent = Literal[
     "unknown",
 ]
 ToolStatus = Literal["success", "error", "skipped"]
+ClarificationSource = Literal["model", "backend_fallback", "backend_guard"]
 RetrievalScene = Literal[
     "promotion",
     "after_sale",
@@ -95,6 +96,36 @@ class ToolCallRecord(BaseModel):
 
     action: ToolAction
     observation: ToolObservation
+
+
+class ClarificationCandidate(BaseModel):
+    """Safe option that the user may choose without exposing private payloads."""
+
+    value: str
+    label: str
+    hint: str
+
+
+class ClarificationRequest(BaseModel):
+    """Structured request returned when a tool target is missing or ambiguous."""
+
+    clarification_field: str
+    message: str
+    candidates: list[ClarificationCandidate] = Field(default_factory=list)
+
+
+class ClarificationPlan(BaseModel):
+    """Model-draftable plan whose arguments are recomputed by the backend."""
+
+    intent: Intent
+    tool_name: str | None = None
+    known_arguments: dict[str, Any] = Field(default_factory=dict)
+    missing_required: list[str] = Field(default_factory=list)
+    clarification_question: str | None = None
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    reason: str
+    source: ClarificationSource
+    model_name: str | None = None
 
 
 class SourceDocument(BaseModel):
@@ -273,6 +304,7 @@ class ChatResponse(BaseModel):
     intent_result: IntentResult
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    clarification: ClarificationRequest | None = None
     cost_summary: CostSummary
     reasoning_summary: list[str]
     session_state: dict[str, Any]
@@ -289,6 +321,17 @@ ToolObservation.model_rebuild(
 )
 ToolCallRecord.model_rebuild(
     _types_namespace={"ToolAction": ToolAction, "ToolObservation": ToolObservation}
+)
+ClarificationCandidate.model_rebuild()
+ClarificationRequest.model_rebuild(
+    _types_namespace={"ClarificationCandidate": ClarificationCandidate}
+)
+ClarificationPlan.model_rebuild(
+    _types_namespace={
+        "Any": Any,
+        "ClarificationSource": ClarificationSource,
+        "Intent": Intent,
+    }
 )
 KnowledgeChunk.model_rebuild(_types_namespace={"Any": Any})
 VectorRecord.model_rebuild(_types_namespace={"KnowledgeChunk": KnowledgeChunk})
@@ -315,6 +358,7 @@ ChatResponse.model_rebuild(
         "Citation": Citation,
         "Intent": Intent,
         "IntentResult": IntentResult,
+        "ClarificationRequest": ClarificationRequest,
         "ToolCallRecord": ToolCallRecord,
     }
 )

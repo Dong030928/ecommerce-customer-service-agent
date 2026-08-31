@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.12.0-realtime-tool-calling",
-    "title": "Realtime Business Facts And Tool Calling",
-    "summary": "当前版本接入电商业务后端，并通过受控只读 Tool Calling 查询订单、物流、商品和退款实时事实。"
+    "id": "v0.13.0-tool-clarification",
+    "title": "Structured Tool Clarification",
+    "summary": "当前版本在只读 Tool Calling 前后增加结构化澄清、可信候选订单和后端参数复核，禁止模型替用户选择目标。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.12.0"
+    "version": "0.13.0"
   },
   "endpoints": {
     "health": true,
@@ -44,7 +44,13 @@
     "tool_schema": true,
     "tool_action_observation": true,
     "trusted_tool_identity_injection": true,
-    "tool_clarification": false,
+    "tool_clarification": true,
+    "clarification_plan": true,
+    "pre_tool_clarification": true,
+    "post_tool_clarification": true,
+    "trusted_runtime_candidates": true,
+    "search_current_user_orders": true,
+    "tool_result_compression": false,
     "workflow": false,
     "human_approval": false,
     "memory": false,
@@ -57,7 +63,7 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "tool_clarification": "缺少业务编号时暂时使用确定性追问，多候选和结构化澄清将在后续版本接入。",
+    "tool_result_compression": "工具结果尚未经过统一摘要压缩和 next_action 治理。",
     "workflow": "售后工作流还没有接入。",
     "human_approval": "HITL 人工确认还没有接入。",
     "memory": "多轮记忆还没有接入。",

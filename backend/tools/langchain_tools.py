@@ -15,6 +15,7 @@ def tool_action_reason(tool_name: str) -> str:
         "get_order_logistics": "用户询问实时物流，模型选择只读物流工具。",
         "get_product_inventory": "用户询问实时价格或库存，模型选择只读商品工具。",
         "get_refund_status": "用户询问退款进度，模型选择只读退款状态工具。",
+        "search_current_user_orders": "用户只提供了月份，模型先查询当前用户的候选订单。",
     }
     return reasons.get(tool_name, "模型根据工具描述提出只读工具调用。")
 
@@ -54,11 +55,16 @@ def build_langchain_tools(
         """查询当前用户退款申请状态。"""
         return run("get_refund_status", {"refund_request_id": refund_request_id})
 
+    def search_current_user_orders(month: int) -> str:
+        """按月份查询当前用户候选订单。"""
+        return run("search_current_user_orders", {"month": month})
+
     functions = {
         "get_order_status": get_order_status,
         "get_order_logistics": get_order_logistics,
         "get_product_inventory": get_product_inventory,
         "get_refund_status": get_refund_status,
+        "search_current_user_orders": search_current_user_orders,
     }
     return [
         StructuredTool.from_function(

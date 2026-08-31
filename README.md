@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.12.0
+## v0.13.0
 
 当前版本提供：
 
@@ -37,12 +37,18 @@
 - 使用有容量上限的 LRU 缓存复用稳定知识的 Hybrid RAG 候选，不缓存最终回答；
 - 订单、物流、库存和退款进度等实时问题禁止进入检索缓存，也不会生成知识引用；
 - 通过受控电商业务客户端查询订单、物流、商品价格/库存和退款申请实时状态；
-- 使用 LangChain `create_agent` 让模型在四个只读工具 schema 中生成结构化调用；
+- 使用 LangChain `create_agent` 让模型在五个只读工具 schema 中生成结构化调用；
 - 后端严格校验工具白名单、必填参数和业务编号格式，拒绝额外参数；
 - 模型不能提交或覆盖用户 ID，`runtime_user_id` 只由后端注入业务接口委托请求；
 - 对工具 Observation 进行字段白名单脱敏，回答只引用脱敏后的实时事实；
 - 顶层返回可观测的 `tool_calls` Action/Observation，实时路由不执行 RAG、不生成 citations；
 - 业务服务、工具依赖或模型调用不可用时安全降级，不猜测实时状态；
+- 工具执行前生成可观测的 `ClarificationPlan`，后端重新计算必填字段；
+- 模型只可润色澄清问题，不能注入订单号、退款号、用户 ID 或清除缺失字段；
+- 从可信 Runtime Context 读取当前用户订单摘要，关联订单或唯一订单可安全补全；
+- 缺少订单号时返回结构化候选项，让用户确认目标而不是让模型代选；
+- 支持按月份筛选当前用户候选订单，并显式标记候选上下文是否截断；
+- 商品查询得到多个匹配时执行工具后澄清，同时保留本轮 Action/Observation；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
@@ -53,9 +59,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“模型选择只读工具 → 后端校验 Action → 注入可信用户身份 → 电商接口 → 脱敏 Observation → 确定性回答”。Runtime Context 不进入 Embedding、缓存键、Reranker 或工具规划模型，实时工具结果也不会伪装成知识引用。
+当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“ClarificationPlan → 后端参数复核 → 必要时用户确认 → LangChain 选择只读工具 → 注入可信用户身份 → 电商接口/可信候选上下文 → 脱敏 Observation → 必要时工具后澄清 → 确定性回答”。Runtime Context 不进入 Embedding、缓存键或 Reranker；澄清模型只接收用户问题和缺失字段，不接收用户身份或订单候选，实时工具结果也不会伪装成知识引用。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询，缺少业务编号时使用确定性追问，尚未实现多候选结构化澄清、写操作审批或工具结果压缩。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参和多候选结构化澄清，但尚未实现写操作审批、ToolResult 统一压缩、`next_action` 或多轮澄清状态记忆。
 
 ## 项目结构
 
@@ -145,7 +151,7 @@ python -m unittest discover -s tests -v
 
 `session_state.rag` 会返回知识索引版本与指纹、缓存策略及命中状态、查询改写、检索场景、三路候选、向量/关键词/重排分数、召回来源和实时业务缺口，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。`/health` 也会返回当前索引版本和 chunk 数量。
 
-实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及来自电商业务接口、经过脱敏的 `observation`。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
+实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及来自电商业务接口、经过脱敏的 `observation`。缺参或多候选时，顶层 `clarification` 返回 `clarification_field`、问题和安全候选项；`session_state.tool_calling` 同时暴露后端校验后的计划和 `pre_tool`/`post_tool` 阶段。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
 
 运行中修改知识文件后，可重启服务或在受控维护流程中调用 `rebuild_knowledge_index()` 重建索引；项目不暴露无鉴权的 HTTP 重建接口。重建会原子替换索引快照，并清空依赖旧版本的向量和检索缓存。
 

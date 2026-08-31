@@ -28,8 +28,13 @@ from tools.tool_runtime import ToolRuntime, validate_tool_action  # noqa: E402
 class SuccessfulToolService:
     """Deterministic service double for the Agent-level realtime route."""
 
-    def run(self, request: ChatRequest, intent: str) -> ToolCallingOutcome:
-        del request, intent
+    def run(
+        self,
+        request: ChatRequest,
+        intent: str,
+        clarification_plan: object | None = None,
+    ) -> ToolCallingOutcome:
+        del request, intent, clarification_plan
         record = ToolCallRecord(
             action=ToolAction(
                 tool_name="get_order_status",

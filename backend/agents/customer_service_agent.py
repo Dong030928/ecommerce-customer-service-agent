@@ -9,6 +9,7 @@ import httpx
 from api.schemas import (
     ChatRequest,
     ChatResponse,
+    ClarificationRequest,
     Intent,
     IntentResult,
     KnowledgeHit,
@@ -23,6 +24,7 @@ from config.settings import (
 from cost.observer import build_cost_summary
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from models.classifier_client import classify_intent_with_model
+from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from rag.knowledge_base import load_knowledge_chunks
 from rag.prompting import build_citations, render_rag_messages
@@ -31,14 +33,18 @@ from rag.quality import is_low_confidence, run_rag_quality_check
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
 from rag.planning import is_realtime_business_query
+from tools.contracts import TOOL_SPECS
 from tools.planning import (
+    build_clarification_plan,
     extract_order_id,
     extract_refund_request_id,
     extract_sku,
+    post_tool_clarification,
+    pre_tool_clarification,
     should_route_to_realtime_tool,
 )
 from tools.runtime_context import public_runtime_context
-from tools.tool_calling import ToolCallingService
+from tools.tool_calling import ToolCallingOutcome, ToolCallingService
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -331,6 +337,18 @@ def build_realtime_business_gap_answer() -> str:
     )
 
 
+def build_clarification_answer(clarification: ClarificationRequest) -> str:
+    """Render a deterministic question without allowing the model to pick an option."""
+
+    if not clarification.candidates:
+        return clarification.message
+    choices = "；".join(
+        f"{candidate.label}（{candidate.hint}）"
+        for candidate in clarification.candidates
+    )
+    return f"{clarification.message} 候选项：{choices}。"
+
+
 class CustomerServiceAgent:
     """Customer-service agent with vector retrieval and verifiable citations."""
 
@@ -349,6 +367,10 @@ class CustomerServiceAgent:
         rerank_http_client: httpx.Client | None = None,
         rerank_config: RerankConfig | None = None,
         tool_calling_service: ToolCallingService | None = None,
+        clarification_http_client: httpx.Client | None = None,
+        clarification_api_key: str | None = None,
+        clarification_base_url: str | None = None,
+        clarification_model_name: str | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
@@ -364,6 +386,10 @@ class CustomerServiceAgent:
         self._rerank_http_client = rerank_http_client
         self._rerank_config = rerank_config
         self._tool_calling_service = tool_calling_service or ToolCallingService()
+        self._clarification_http_client = clarification_http_client
+        self._clarification_api_key = clarification_api_key
+        self._clarification_base_url = clarification_base_url
+        self._clarification_model_name = clarification_model_name
 
     def _chat_with_tools(
         self,
@@ -373,7 +399,54 @@ class CustomerServiceAgent:
     ) -> ChatResponse:
         """Run realtime reads without sending trusted identity to the planning model."""
 
-        outcome = self._tool_calling_service.run(request, intent_result.intent)
+        clarification_plan = build_clarification_plan(
+            request,
+            intent_result.intent,
+        )
+        clarification = None
+        clarification_stage = None
+        if clarification_plan.missing_required:
+            clarification_plan = plan_clarification_with_model(
+                request,
+                clarification_plan,
+                http_client=self._clarification_http_client,
+                api_key=self._clarification_api_key,
+                base_url=self._clarification_base_url,
+                model=self._clarification_model_name,
+            )
+            clarification = pre_tool_clarification(request, clarification_plan)
+
+        if clarification is not None:
+            clarification_stage = "pre_tool"
+            outcome = ToolCallingOutcome(
+                answer=build_clarification_answer(clarification),
+                tool_calls=[],
+                state={
+                    "create_agent": False,
+                    "skip_reason": "clarification_required",
+                    "available_tools": [
+                        spec.model_dump() for spec in TOOL_SPECS.values()
+                    ],
+                    "message_types": [],
+                    "answer_source": "structured_clarification",
+                },
+                used_model=clarification_plan.source == "model",
+                model_name=clarification_plan.model_name,
+            )
+        else:
+            outcome = self._tool_calling_service.run(
+                request,
+                intent_result.intent,
+                clarification_plan,
+            )
+            clarification = post_tool_clarification(outcome.tool_calls)
+            if clarification is not None:
+                clarification_stage = "post_tool"
+        response_answer = (
+            build_clarification_answer(clarification)
+            if clarification is not None
+            else outcome.answer
+        )
         public_messages = [
             {
                 "role": "system",
@@ -381,7 +454,7 @@ class CustomerServiceAgent:
             },
             {"role": "user", "content": request.user_message},
         ]
-        cost_summary = build_cost_summary(public_messages, outcome.answer, None)
+        cost_summary = build_cost_summary(public_messages, response_answer, None)
         event = {
             "message_count": message_count,
             "intent": intent_result.intent,
@@ -396,18 +469,24 @@ class CustomerServiceAgent:
             "规划模型只接收用户问题和只读工具 schema，不接收 runtime_user_id。",
             "后端校验工具名与参数，并从可信 Runtime Context 注入当前用户身份。",
             f"本轮得到 {len(outcome.tool_calls)} 条经过脱敏的 Action/Observation 记录。",
+            (
+                f"本轮澄清阶段为 {clarification_stage}，模型不能替用户选择候选。"
+                if clarification_stage
+                else "本轮工具参数唯一且完整，不需要向用户澄清。"
+            ),
         ]
         return ChatResponse(
             session_id=request.session_id,
-            answer=outcome.answer,
+            answer=response_answer,
             intent=intent_result.intent,
             intent_result=intent_result,
             citations=[],
             tool_calls=outcome.tool_calls,
+            clarification=clarification,
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.12.0",
+                "agent_version": "0.13.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -424,6 +503,11 @@ class CustomerServiceAgent:
                 },
                 "tool_calling": {
                     **outcome.state,
+                    "clarification_plan": clarification_plan.model_dump(),
+                    "clarification": (
+                        clarification.model_dump() if clarification else None
+                    ),
+                    "clarification_stage": clarification_stage,
                     "tool_call_count": len(outcome.tool_calls),
                     "actions": [
                         record.action.model_dump() for record in outcome.tool_calls
@@ -444,7 +528,7 @@ class CustomerServiceAgent:
                     ),
                     "latest": event,
                 },
-                "next_gap": "只读工具已经可调用；下一步需要处理缺参数、多候选和结构化澄清。",
+                "next_gap": "工具已支持前后澄清；下一步需要统一压缩 ToolResult 并治理 Observation。",
             },
         )
 
@@ -640,7 +724,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.12.0",
+            "agent_version": "0.13.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

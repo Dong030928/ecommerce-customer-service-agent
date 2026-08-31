@@ -28,4 +28,10 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         required=["refund_request_id"],
         parameters_schema={"refund_request_id": "退款申请号，例如 RF-1001"},
     ),
+    "search_current_user_orders": ToolSpec(
+        name="search_current_user_orders",
+        description="按月份筛选可信 Runtime Context 中当前用户的候选订单，只读。",
+        required=["month"],
+        parameters_schema={"month": "订单月份，整数 1 到 12"},
+    ),
 }

@@ -8,6 +8,10 @@ from api.schemas import ChatRequest, ToolAction, ToolObservation
 from integrations.ecommerce_client import EcommerceClient, EcommerceClientError
 from tools.contracts import TOOL_SPECS
 from tools.planning import ORDER_ID_PATTERN, REFUND_ID_PATTERN
+from tools.runtime_context import (
+    current_user_orders_truncated,
+    order_candidates,
+)
 
 
 def _pick(data: dict[str, Any], fields: list[str]) -> dict[str, Any]:
@@ -140,6 +144,16 @@ def validate_tool_action(action: ToolAction) -> ToolObservation | None:
                 error_code="refund_request_id_invalid",
                 source="tool_runtime",
             )
+    if action.tool_name == "search_current_user_orders":
+        month = action.arguments.get("month")
+        if isinstance(month, bool) or not isinstance(month, int) or not 1 <= month <= 12:
+            return ToolObservation(
+                tool_name=action.tool_name,
+                status="error",
+                summary="订单月份必须是 1 到 12 的整数。",
+                error_code="order_month_invalid",
+                source="tool_runtime",
+            )
     return None
 
 
@@ -154,6 +168,26 @@ class ToolRuntime:
         if validation_error is not None:
             return validation_error
         try:
+            if action.tool_name == "search_current_user_orders":
+                month = int(action.arguments["month"])
+                candidates = order_candidates(request, month=month)
+                truncated = current_user_orders_truncated(request)
+                summary = f"按 {month} 月找到 {len(candidates)} 个当前用户订单候选。"
+                if truncated:
+                    summary += " 当前订单上下文已截断，结果只代表已加载窗口。"
+                return ToolObservation(
+                    tool_name=action.tool_name,
+                    status="success",
+                    summary=summary,
+                    data={
+                        "month": month,
+                        "context_truncated": truncated,
+                        "candidate_orders": [
+                            candidate.model_dump() for candidate in candidates
+                        ],
+                    },
+                    source="trusted_runtime_context",
+                )
             if action.tool_name == "get_order_status":
                 order = self._ecommerce_client.get_order(
                     str(action.arguments["order_id"]),
