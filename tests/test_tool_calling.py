@@ -239,6 +239,10 @@ class ToolCallingTests(unittest.TestCase):
             "skipped_realtime_tool_route",
         )
         self.assertEqual(response.citations, [])
+        self.assertEqual(response.next_action, "answer_user")
+        self.assertFalse(
+            response.session_state["tool_calling"]["raw_tool_result_exposed"]
+        )
         self.assertNotIn("PRIVATE-USER-ID", response.answer)
 
 

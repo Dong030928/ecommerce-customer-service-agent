@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.0
+
+- 增加内部 `ToolResult` 契约，原始业务 payload 只保留在后端工具执行边界；
+- 新增 Observation 压缩层，将订单、物流、商品、退款和候选订单结果按字段白名单转换；
+- Observation 返回安全摘要、关键 `facts`、`omitted_fields` 和 `next_action`；
+- 完整物流轨迹、运单号、用户身份、订单备注、商品长描述和退款内部字段不进入模型或公开响应；
+- LangChain 工具只返回压缩后的 Observation，模型最终措辞仅在 Observation 可直接回答时采用；
+- 顶层响应增加 `next_action`，区分回答用户、继续澄清和安全兜底；
+- 保留结构化工具前/工具后澄清、真实业务查询以及稳定 Hybrid RAG/citations 链路；
+- 新增 ToolResult 隔离、字段省略、模型可见上下文和 next_action 回归测试。
+
 ## 0.13.0
 
 - 增加顶层 `clarification`、`ClarificationPlan`、结构化候选项和澄清阶段状态；

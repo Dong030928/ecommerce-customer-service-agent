@@ -69,6 +69,7 @@ class ToolClarificationTests(unittest.TestCase):
             response.session_state["tool_calling"]["clarification_stage"],
             "pre_tool",
         )
+        self.assertEqual(response.next_action, "ask_clarification")
         self.assertNotIn("PRIVATE-USER-ID", response.answer)
 
     def test_model_draft_cannot_inject_identity_or_invent_order(self) -> None:

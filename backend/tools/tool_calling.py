@@ -91,6 +91,29 @@ def _answer_from_observations(records: list[ToolCallRecord]) -> str:
     return "模型没有生成可执行的只读工具调用，因此我不能猜测实时业务状态。"
 
 
+def _final_model_wording(
+    messages: list[Any],
+    records: list[ToolCallRecord],
+) -> str | None:
+    """Use final wording only after every ToolResult became a safe Observation."""
+
+    if not records or any(
+        record.observation.status != "success"
+        or record.observation.next_action != "answer_user"
+        for record in records
+    ):
+        return None
+    for message in reversed(messages):
+        if message.__class__.__name__ != "AIMessage":
+            continue
+        if getattr(message, "tool_calls", None):
+            continue
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content.strip()[:1200]
+    return None
+
+
 class ToolCallingService:
     """Run a bounded tool loop while keeping identity inside the backend runtime."""
 
@@ -138,9 +161,10 @@ class ToolCallingService:
             )
             messages = list(result.get("messages") or [])
             records = _tool_records(messages)
+            model_wording = _final_model_wording(messages, records)
             model_name = _model_label(model)
             return ToolCallingOutcome(
-                answer=_answer_from_observations(records),
+                answer=model_wording or _answer_from_observations(records),
                 tool_calls=records,
                 state={
                     "create_agent": True,
@@ -148,8 +172,12 @@ class ToolCallingService:
                     "message_types": [
                         message.__class__.__name__ for message in messages
                     ],
-                    "answer_source": "sanitized_tool_observation",
-                    "model_final_wording_used": False,
+                    "answer_source": (
+                        "model_from_compressed_observation"
+                        if model_wording
+                        else "compressed_observation_fallback"
+                    ),
+                    "model_final_wording_used": model_wording is not None,
                     "validated_plan_used": clarification_plan is not None,
                 },
                 used_model=True,

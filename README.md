@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.13.0
+## v0.14.0
 
 当前版本提供：
 
@@ -49,6 +49,12 @@
 - 缺少订单号时返回结构化候选项，让用户确认目标而不是让模型代选；
 - 支持按月份筛选当前用户候选订单，并显式标记候选上下文是否截断；
 - 商品查询得到多个匹配时执行工具后澄清，同时保留本轮 Action/Observation；
+- 在工具执行层显式区分内部 `ToolResult` 与模型/响应可见的 `Observation`；
+- 原始订单、物流、商品和退款 payload 只在后端内部短暂存在，不进入 LangChain 消息；
+- 按工具白名单压缩为安全摘要和关键 `facts`，并通过 `omitted_fields` 说明省略字段；
+- 完整物流轨迹、运单号、用户身份、订单备注、商品长描述和退款内部字段不会进入回答上下文；
+- 顶层返回 `next_action=answer_user/ask_clarification/fallback_answer`；
+- 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
 - 优先解析模型平台 `usage`，缺失时使用本地 token 估算；
@@ -59,9 +65,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“ClarificationPlan → 后端参数复核 → 必要时用户确认 → LangChain 选择只读工具 → 注入可信用户身份 → 电商接口/可信候选上下文 → 脱敏 Observation → 必要时工具后澄清 → 确定性回答”。Runtime Context 不进入 Embedding、缓存键或 Reranker；澄清模型只接收用户问题和缺失字段，不接收用户身份或订单候选，实时工具结果也不会伪装成知识引用。
+当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“ClarificationPlan → 后端参数复核 → 必要时用户确认 → LangChain 选择只读工具 → 注入可信用户身份 → 内部 ToolResult → 字段白名单压缩 → 安全 Observation → 必要时工具后澄清 → Grounded Answer”。Runtime Context 不进入 Embedding、缓存键或 Reranker；澄清模型只接收用户问题和缺失字段，不接收用户身份或订单候选，原始 ToolResult 不进入模型或公开响应，实时工具结果也不会伪装成知识引用。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参和多候选结构化澄清，但尚未实现写操作审批、ToolResult 统一压缩、`next_action` 或多轮澄清状态记忆。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参/多候选澄清、ToolResult 压缩和 `next_action`，但尚未实现工具错误分级、重试/降级、写操作审批或多轮澄清状态记忆。
 
 ## 项目结构
 
@@ -75,6 +81,7 @@ backend/
   embeddings/   # OpenAI-compatible Embedding 客户端与文本缓存
   integrations/ # 电商业务后端客户端与安全错误映射
   models/       # OpenAI-compatible 分类和回答模型客户端
+  observability/ # ToolResult 到安全 Observation 的压缩层
   rag/          # 文档切片、版本化索引、检索缓存、混合召回、重排与质量检查
   tools/        # 只读工具契约、规划、可信执行与 LangChain Tool Calling
   rag_quality_cases.json # 固定 RAG 质量问题集
@@ -151,7 +158,7 @@ python -m unittest discover -s tests -v
 
 `session_state.rag` 会返回知识索引版本与指纹、缓存策略及命中状态、查询改写、检索场景、三路候选、向量/关键词/重排分数、召回来源和实时业务缺口，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。`/health` 也会返回当前索引版本和 chunk 数量。
 
-实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及来自电商业务接口、经过脱敏的 `observation`。缺参或多候选时，顶层 `clarification` 返回 `clarification_field`、问题和安全候选项；`session_state.tool_calling` 同时暴露后端校验后的计划和 `pre_tool`/`post_tool` 阶段。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
+实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及由内部 ToolResult 压缩得到的 `observation`；Observation 只包含 `summary`、安全 `facts`、`omitted_fields`、`next_action` 和必要的安全候选数据。缺参或多候选时，顶层 `clarification` 返回 `clarification_field`、问题和安全候选项；顶层 `next_action` 告诉调用方应回答、继续澄清还是兜底。`session_state.tool_calling` 同时暴露后端校验后的计划、`pre_tool`/`post_tool` 阶段以及 `raw_tool_result_exposed=false`。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
 
 运行中修改知识文件后，可重启服务或在受控维护流程中调用 `rebuild_knowledge_index()` 重建索引；项目不暴露无鉴权的 HTTP 重建接口。重建会原子替换索引快照，并清空依赖旧版本的向量和检索缓存。
 

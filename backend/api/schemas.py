@@ -20,6 +20,7 @@ Intent = Literal[
     "unknown",
 ]
 ToolStatus = Literal["success", "error", "skipped"]
+NextAction = Literal["answer_user", "ask_clarification", "fallback_answer"]
 ClarificationSource = Literal["model", "backend_fallback", "backend_guard"]
 RetrievalScene = Literal[
     "promotion",
@@ -80,12 +81,25 @@ class ToolAction(BaseModel):
     reason: str
 
 
+class ToolResult(BaseModel):
+    """Internal-only raw result; it must be compressed before model/public use."""
+
+    tool_name: str
+    status: ToolStatus
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+    error_code: str | None = None
+    source: str = "ecommerce_backend"
+
+
 class ToolObservation(BaseModel):
     """Sanitized result returned by the controlled backend tool runtime."""
 
     tool_name: str
     status: ToolStatus
     summary: str
+    facts: dict[str, Any] = Field(default_factory=dict)
+    omitted_fields: list[str] = Field(default_factory=list)
+    next_action: NextAction = "answer_user"
     data: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
     source: str = "ecommerce_backend"
@@ -305,6 +319,7 @@ class ChatResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     clarification: ClarificationRequest | None = None
+    next_action: NextAction = "answer_user"
     cost_summary: CostSummary
     reasoning_summary: list[str]
     session_state: dict[str, Any]
@@ -316,8 +331,15 @@ IntentResult.model_rebuild(
 )
 ToolSpec.model_rebuild()
 ToolAction.model_rebuild(_types_namespace={"Any": Any})
-ToolObservation.model_rebuild(
+ToolResult.model_rebuild(
     _types_namespace={"Any": Any, "ToolStatus": ToolStatus}
+)
+ToolObservation.model_rebuild(
+    _types_namespace={
+        "Any": Any,
+        "NextAction": NextAction,
+        "ToolStatus": ToolStatus,
+    }
 )
 ToolCallRecord.model_rebuild(
     _types_namespace={"ToolAction": ToolAction, "ToolObservation": ToolObservation}
@@ -358,6 +380,7 @@ ChatResponse.model_rebuild(
         "Citation": Citation,
         "Intent": Intent,
         "IntentResult": IntentResult,
+        "NextAction": NextAction,
         "ClarificationRequest": ClarificationRequest,
         "ToolCallRecord": ToolCallRecord,
     }

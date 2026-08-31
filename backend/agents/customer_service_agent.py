@@ -447,6 +447,12 @@ class CustomerServiceAgent:
             if clarification is not None
             else outcome.answer
         )
+        if clarification is not None:
+            next_action = "ask_clarification"
+        elif outcome.tool_calls:
+            next_action = outcome.tool_calls[-1].observation.next_action
+        else:
+            next_action = "fallback_answer"
         public_messages = [
             {
                 "role": "system",
@@ -461,6 +467,7 @@ class CustomerServiceAgent:
             "tool_names": [
                 record.action.tool_name for record in outcome.tool_calls
             ],
+            "next_action": next_action,
             "cost_summary": cost_summary.model_dump(),
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
@@ -469,6 +476,7 @@ class CustomerServiceAgent:
             "规划模型只接收用户问题和只读工具 schema，不接收 runtime_user_id。",
             "后端校验工具名与参数，并从可信 Runtime Context 注入当前用户身份。",
             f"本轮得到 {len(outcome.tool_calls)} 条经过脱敏的 Action/Observation 记录。",
+            "内部 ToolResult 已按字段白名单压缩，原始业务 payload 不进入模型或公开响应。",
             (
                 f"本轮澄清阶段为 {clarification_stage}，模型不能替用户选择候选。"
                 if clarification_stage
@@ -483,10 +491,11 @@ class CustomerServiceAgent:
             citations=[],
             tool_calls=outcome.tool_calls,
             clarification=clarification,
+            next_action=next_action,
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.13.0",
+                "agent_version": "0.14.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -516,6 +525,9 @@ class CustomerServiceAgent:
                         record.observation.model_dump()
                         for record in outcome.tool_calls
                     ],
+                    "raw_tool_result_exposed": False,
+                    "observation_compression": True,
+                    "next_action": next_action,
                 },
                 "rag": {
                     "status": "skipped_realtime_tool_route",
@@ -528,7 +540,7 @@ class CustomerServiceAgent:
                     ),
                     "latest": event,
                 },
-                "next_gap": "工具已支持前后澄清；下一步需要统一压缩 ToolResult 并治理 Observation。",
+                "next_gap": "Observation 已受控压缩；下一步需要增加工具错误分类、重试与降级策略。",
             },
         )
 
@@ -724,7 +736,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.13.0",
+            "agent_version": "0.14.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -822,7 +834,7 @@ class CustomerServiceAgent:
                 "event_count": len(self._cost_events_by_session[request.session_id]),
                 "latest": event,
             },
-            "next_gap": "索引版本与稳定检索缓存已经就绪；下一步需要接入订单、物流、库存和退款进度业务工具。",
+            "next_gap": "Observation 已受控压缩；下一步需要增加工具错误分类、重试与降级策略。",
         }
         return ChatResponse(
             session_id=request.session_id,
@@ -831,6 +843,7 @@ class CustomerServiceAgent:
             intent_result=intent_result,
             citations=citations,
             tool_calls=[],
+            next_action="answer_user",
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state=session_state,
