@@ -49,13 +49,20 @@ def rewrite_retrieval_query(user_message: str, intent: Intent) -> QueryRewrite:
     added_terms: list[str] = []
     rewrite_reasons: list[str] = []
 
-    if intent == "promotion_consult" and "耳机" in normalized:
+    product_promotion_query = intent == "product_consult" and any(
+        term in normalized
+        for term in ["活动", "优惠", "会员价", "优惠券", "叠加", "结算页"]
+    )
+    if (intent == "promotion_consult" or product_promotion_query) and "耳机" in normalized:
         add_rewrite_terms(added_terms, ["当前", "2026", "春季音频节"])
-        rewrite_reasons.append("耳机促销咨询补齐当前活动时间和活动名")
+        rewrite_reasons.append("耳机活动咨询补齐当前活动时间和活动名")
         add_rewrite_terms(added_terms, ["降噪耳机"])
         rewrite_reasons.append("补齐知识库中的具体商品类目")
         add_rewrite_terms(added_terms, ["会员价", "优惠券", "叠加", "结算页"])
         rewrite_reasons.append("补齐优惠叠加与结算页边界，增强重排信号")
+    elif intent == "product_consult" and "耳机" in normalized:
+        add_rewrite_terms(added_terms, ["降噪耳机"])
+        rewrite_reasons.append("补齐知识库中的具体商品类目")
     elif intent == "refund_request":
         add_rewrite_terms(added_terms, ["售后规则", "签收时间", "退货条件", "凭证"])
         rewrite_reasons.append("售后意图补齐签收时间、退货条件和凭证要求")

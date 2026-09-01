@@ -179,25 +179,48 @@ def _logistics_observation(result: ToolResult) -> ToolObservation:
 
 def _product_observation(result: ToolResult) -> ToolObservation:
     product = _dict(result.raw_payload.get("product"))
+    promotion = _dict(product.get("promotion"))
     facts = {
         "sku": product.get("code"),
         "name": product.get("name"),
         "current_price": product.get("price"),
+        "promotion_price": promotion.get("promotionPrice"),
         "inventory": product.get("stock"),
         "active": product.get("active"),
+        "promotion_name": promotion.get("promotionName"),
+        "promotion_summary": promotion.get("discountSummary"),
+        "required_member_level": promotion.get("requiredMemberLevel"),
+        "promotion_condition": promotion.get("conditionSummary"),
     }
+    promotion_text = (
+        f"，活动价 {facts['promotion_price']} 元，当前活动为"
+        f"{facts['promotion_name'] or facts['promotion_summary'] or '已生效活动'}"
+        if promotion
+        else "，当前未返回生效活动"
+    )
     return ToolObservation(
         tool_name=result.tool_name,
         status="success",
         summary=(
-            f"{facts['name']}（{facts['sku']}）当前价 {facts['current_price']} 元，"
-            f"库存 {facts['inventory']} 件。"
+            f"{facts['name']}（{facts['sku']}）标价 {facts['current_price']} 元，"
+            f"库存 {facts['inventory']} 件{promotion_text}。"
         ),
         facts=facts,
         omitted_fields=_omitted_paths(
             "product",
             product,
-            {"code", "name", "price", "stock", "active"},
+            {"code", "name", "price", "stock", "active", "promotion"},
+        )
+        + _omitted_paths(
+            "promotion",
+            promotion,
+            {
+                "promotionName",
+                "discountSummary",
+                "promotionPrice",
+                "requiredMemberLevel",
+                "conditionSummary",
+            },
         ),
         next_action="answer_user",
         data={"product": facts},

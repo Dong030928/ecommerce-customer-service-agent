@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.15.0-error-degradation",
-    "title": "Error Classification And Safe Degradation",
-    "summary": "当前版本为模型与工具失败提供稳定错误分类、只读超时有限重试、确定性降级话术和高风险写操作拦截。"
+    "id": "v0.16.0-product-tool-rag",
+    "title": "Product Tool And RAG Joint Answer",
+    "summary": "当前版本在同一商品回答中联合使用实时工具 Observation 与稳定知识 RAG citations，同时保持两类事实的来源边界。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.15.0"
+    "version": "0.16.0"
   },
   "endpoints": {
     "health": true,
@@ -56,6 +56,11 @@
     "observation_omitted_fields": true,
     "next_action": true,
     "model_answer_from_observation": true,
+    "tool_rag_joint_answer": true,
+    "product_tool_rag_route": true,
+    "product_promotion_observation": true,
+    "balanced_product_promotion_hits": true,
+    "joint_answer_source_boundary": true,
     "error_category": true,
     "tool_attempts": true,
     "read_only_timeout_retry": true,

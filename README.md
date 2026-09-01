@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.15.0
+## v0.16.0
 
 当前版本提供：
 
@@ -60,6 +60,13 @@
 - 工具或模型失败时使用确定性安全模板降级，不把异常详情、响应体或凭证交给模型；
 - 在 RAG 和 Tool Calling 前拦截直接退款、取消订单和赔付等高风险写请求，不执行写操作；
 - 顶层返回 `risk_level`、`needs_human_approval` 与 `degraded`，并用 `transfer_to_human` 表示人工边界；
+- 将商品问题细分为纯实时工具、纯稳定知识 RAG、Tool + RAG 联合回答三条路由；
+- 同时询问商品库存/价格与卖点/活动规则时，在一个响应中返回 `tool_calls` 和 `citations`；
+- 当前标价、活动价、库存、活动名称和会员条件只来自商品业务接口的安全 Observation；
+- 商品卖点与平台活动规则只来自 Hybrid RAG 可靠命中，不用知识库猜当前价格或库存；
+- 联合检索平衡选择商品知识与活动规则，避免促销扩展词挤掉商品卖点证据；
+- 联合回答模型只接收脱敏 Observation 与可靠知识块，缺少引用标记时回退确定性回答；
+- 在 `session_state.tool_rag` 暴露回答来源、事实边界、工具名、citation chunk 和联合完成状态；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -71,9 +78,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本形成两条相互隔离的事实链路：活动规则、售后政策等稳定知识继续走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品价格/库存和退款进度等实时事实走“风险边界 → ClarificationPlan → 后端参数复核 → 必要时用户确认 → LangChain 选择只读工具 → 注入可信用户身份 → 内部 ToolResult → 错误分类/有限重试 → 字段白名单压缩 → 安全 Observation → 必要时工具后澄清 → Grounded Answer/确定性降级”。Runtime Context 不进入 Embedding、缓存键或 Reranker；澄清模型只接收用户问题和缺失字段，不接收用户身份或订单候选，原始 ToolResult 不进入模型或公开响应，实时工具结果也不会伪装成知识引用。
+当前版本形成三条可观察路由：活动规则、售后政策等稳定知识走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品当前价格/库存和退款进度等纯实时事实走“风险边界 → ClarificationPlan → 后端参数复核 → LangChain 只读工具 → 内部 ToolResult → 错误分类/有限重试 → 安全 Observation”；同时询问商品当前事实与稳定知识时走“商品工具 Observation + 商品/活动平衡检索 + 联合 Grounded Answer”。Runtime Context 不进入 Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 不进入模型或公开响应，RAG 规则也不会被冒充为当前 SKU 的实时事实。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参/多候选澄清、ToolResult 压缩、错误分类、超时有限重试和安全降级。高风险写请求只会被拦截并返回人工确认信号，尚未实现可恢复工作流、真实 HITL 审批或多轮澄清状态记忆。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参/多候选澄清、ToolResult 压缩、错误分类、超时有限重试、安全降级以及商品 Tool + RAG 联合回答。高风险写请求只会被拦截并返回人工确认信号，尚未实现可恢复工作流、真实 HITL 审批或多轮澄清状态记忆。
 
 ## 项目结构
 
@@ -166,6 +173,8 @@ python -m unittest discover -s tests -v
 `session_state.rag` 会返回知识索引版本与指纹、缓存策略及命中状态、查询改写、检索场景、三路候选、向量/关键词/重排分数、召回来源和实时业务缺口，并继续暴露低置信门槛及 citations。`session_state.rag_quality` 返回固定问题集数量、通过数量以及平均 `recall@k`、`precision@k`。`/health` 也会返回当前索引版本和 chunk 数量。
 
 实时业务问题会在顶层返回 `tool_calls`。每条记录包含模型提出且经后端校验的 `action`，以及由内部 ToolResult 压缩得到的 `observation`；Observation 只包含 `summary`、安全 `facts`、`omitted_fields`、`next_action`、`error_category`、`attempts` 和必要的安全候选数据。缺参或多候选时，顶层 `clarification` 返回 `clarification_field`、问题和安全候选项；顶层 `next_action` 告诉调用方应回答、继续澄清、安全兜底还是转人工。`session_state.degradation` 返回是否降级、稳定错误类别、重试次数、是否使用兜底和安全原因码。`session_state.tool_calling` 同时暴露后端校验后的计划、`pre_tool`/`post_tool` 阶段以及 `raw_tool_result_exposed=false`。这条路由的 `session_state.rag.status` 为 `skipped_realtime_tool_route`，`citations` 为空；业务接口会使用 `X-Agent-Service-Token` 和后端注入的 `X-Agent-User-Id` 完成身份委托。
+
+商品混合问题会同时返回 `tool_calls` 与 `citations`。`session_state.tool_rag` 明确记录 `current_price_inventory=tool`、`product_and_promotion_knowledge=rag`，并暴露最终采用的工具与 citation chunk；活动价和当前活动取自商品接口中的 `promotion`，活动 ID、起止时间和未白名单字段不会进入模型。纯库存/价格问题仍只走工具，纯卖点/规则问题仍只走 RAG。
 
 “直接退款、取消订单或赔付”等写请求会在任何检索或工具调用之前被拦截：响应返回 `risk_level=high`、`needs_human_approval=true`、`degraded=true` 和 `next_action=transfer_to_human`。这只是明确的人工接管边界，不代表已经创建工单、执行退款或完成 HITL 审批。
 

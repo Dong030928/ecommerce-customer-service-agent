@@ -23,6 +23,20 @@ REFUND_ID_PATTERN = re.compile(r"\bRF-[A-Za-z0-9_-]{3,}\b", re.IGNORECASE)
 SKU_PATTERN = re.compile(r"\bSKU-[A-Za-z0-9_-]{3,}\b", re.IGNORECASE)
 MONTH_PATTERN = re.compile(r"(?<!\d)(1[0-2]|0?[1-9])\s*月")
 PRODUCT_REFERENCES = ["耳机", "充电器", "音箱"]
+PRODUCT_REALTIME_TERMS = ["库存", "价格", "多少钱", "还有货", "有没有货", "现价"]
+PRODUCT_KNOWLEDGE_TERMS = [
+    "推荐",
+    "适合",
+    "通勤",
+    "差旅",
+    "续航",
+    "规则",
+    "活动",
+    "优惠",
+    "会员价",
+    "优惠券",
+    "叠加",
+]
 CLARIFICATION_FIELD_TERMS = {
     "order_id": ["订单", "订单号"],
     "refund_request_id": ["退款", "申请号"],
@@ -57,6 +71,16 @@ def extract_product_reference(message: str) -> str | None:
     if sku:
         return sku
     return next((term for term in PRODUCT_REFERENCES if term in message), None)
+
+
+def is_product_tool_rag_query(intent: Intent, message: str) -> bool:
+    """Route mixed current-fact and stable-knowledge questions to both sources."""
+
+    if intent != "product_consult" or extract_product_reference(message) is None:
+        return False
+    return any(term in message for term in PRODUCT_REALTIME_TERMS) and any(
+        term in message for term in PRODUCT_KNOWLEDGE_TERMS
+    )
 
 
 def select_realtime_tool(intent: Intent, message: str) -> str | None:
@@ -283,7 +307,7 @@ def should_route_to_realtime_tool(intent: Intent, message: str) -> bool:
         return is_realtime_business_query(message) or bool(extract_order_id(message))
     if intent != "product_consult":
         return False
-    realtime_terms = ["库存", "价格", "多少钱", "还有货", "有没有货", "现价"]
+    realtime_terms = PRODUCT_REALTIME_TERMS
     stable_terms = ["规则", "活动规则", "优惠券", "叠加", "价保规则"]
     return any(term in message for term in realtime_terms) and not any(
         term in message for term in stable_terms

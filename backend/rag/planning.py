@@ -97,6 +97,13 @@ def detect_retrieval_scene(query: str, intent: Intent) -> RetrievalScene:
         return "complaint"
     if intent == "refund_request":
         return "after_sale"
+    if intent == "product_consult" and any(
+        signal in normalized
+        for signal in ["耳机", "充电器", "音箱", "推荐", "哪个好", "通勤", "差旅"]
+    ):
+        # Product consultations may also ask about promotions. The product scene
+        # intentionally allows both product and promotion knowledge domains.
+        return "product"
     for scene, signals in SCENE_SIGNALS:
         if any(signal in normalized for signal in signals):
             return scene

@@ -33,9 +33,15 @@ from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from rag.knowledge_base import load_knowledge_chunks
-from rag.prompting import build_citations, render_rag_messages
+from rag.prompting import (
+    build_citations,
+    build_product_tool_rag_fallback,
+    render_product_tool_rag_messages,
+    render_rag_messages,
+)
 from rag.hybrid_retrieval import retrieve_hybrid_candidates
 from rag.quality import is_low_confidence, run_rag_quality_check
+from rag.product_joint import select_product_joint_hits
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
 from rag.planning import is_realtime_business_query
@@ -45,6 +51,7 @@ from tools.planning import (
     extract_order_id,
     extract_refund_request_id,
     extract_sku,
+    is_product_tool_rag_query,
     post_tool_clarification,
     pre_tool_clarification,
     should_route_to_realtime_tool,
@@ -214,6 +221,18 @@ def plan_intent_by_rules(user_message: str) -> IntentResult | None:
             confidence=0.95,
             matched_keywords=["显式 SKU"],
             explanation="用户提供了 SKU 并查询实时价格或库存，规则高置信路由到只读商品工具。",
+        )
+
+    if is_product_tool_rag_query("product_consult", message):
+        return IntentResult(
+            intent="product_consult",
+            source="rules",
+            confidence=0.95,
+            matched_keywords=["商品实时事实", "商品稳定知识"],
+            explanation=(
+                "用户同时询问商品实时价格或库存与稳定卖点或活动规则，"
+                "路由到 Tool + RAG 联合回答。"
+            ),
         )
 
     core_evidence = [
@@ -438,7 +457,7 @@ class CustomerServiceAgent:
                 "请求已标记为高风险并转入人工确认边界。",
             ],
             session_state={
-                "agent_version": "0.15.0",
+                "agent_version": "0.16.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -591,7 +610,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.15.0",
+                "agent_version": "0.16.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -641,6 +660,219 @@ class CustomerServiceAgent:
             },
         )
 
+    def _chat_with_product_tool_rag(
+        self,
+        request: ChatRequest,
+        intent_result: IntentResult,
+        message_count: int,
+    ) -> ChatResponse:
+        """Combine current product facts with stable, cited product knowledge."""
+
+        tool_response = self._chat_with_tools(request, intent_result, message_count)
+        successful_observations = [
+            record.observation
+            for record in tool_response.tool_calls
+            if record.observation.status == "success"
+        ]
+        if (
+            tool_response.clarification is not None
+            or tool_response.degraded
+            or not successful_observations
+        ):
+            tool_response.session_state["tool_rag"] = {
+                "mode": "product_tool_plus_rag",
+                "status": "stopped_before_joint_answer",
+                "answer_sources": ["tool"] if successful_observations else [],
+                "joint_answer_complete": False,
+                "reason": (
+                    "clarification_required"
+                    if tool_response.clarification is not None
+                    else "tool_unavailable"
+                ),
+            }
+            return tool_response
+
+        rewrite = rewrite_retrieval_query(
+            request.user_message,
+            intent_result.intent,
+        )
+        retrieval_error: str | None = None
+        retrieval_outcome = None
+        rerank_outcome = None
+        reliable_hits: list[KnowledgeHit] = []
+        try:
+            retrieval_outcome = retrieve_hybrid_candidates(
+                rewrite,
+                intent_result.intent,
+                embedding_client=self._embedding_client,
+            )
+            rerank_outcome = rerank_candidates(
+                rewrite.rewritten_query,
+                retrieval_outcome.candidates,
+                config=self._rerank_config,
+                http_client=self._rerank_http_client,
+            )
+            reliable_hits = select_product_joint_hits(rerank_outcome.hits)
+        except (
+            RuntimeError,
+            httpx.HTTPError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            retrieval_error = exc.__class__.__name__
+
+        citations = build_citations(reliable_hits)
+        fallback_answer = build_product_tool_rag_fallback(
+            successful_observations,
+            reliable_hits,
+        )
+        messages = render_product_tool_rag_messages(
+            request.user_message,
+            successful_observations,
+            reliable_hits,
+        )
+        if reliable_hits:
+            model_answer = call_chat_model(
+                messages,
+                fallback_answer=fallback_answer,
+                http_client=self._answer_http_client,
+                api_key=self._answer_api_key,
+                base_url=self._answer_base_url,
+                model=self._answer_model_name,
+            )
+            if model_answer.used_model and "[C" not in model_answer.answer:
+                model_answer = ModelAnswerResult(
+                    answer=fallback_answer,
+                    model_name=model_answer.model_name,
+                    fallback_reason="citation_marker_missing",
+                    usage=model_answer.usage,
+                )
+        else:
+            model_answer = ModelAnswerResult(
+                answer=fallback_answer,
+                fallback_reason=(
+                    retrieval_error or "joint_rag_low_confidence"
+                ),
+            )
+
+        degraded = retrieval_error is not None or (
+            bool(reliable_hits) and not model_answer.used_model
+        )
+        degradation_category = (
+            "system_error"
+            if retrieval_error is not None
+            else "model_unavailable"
+            if degraded
+            else "none"
+        )
+        cost_summary = build_cost_summary(
+            messages,
+            model_answer.answer,
+            model_answer.usage,
+        )
+        event = {
+            "message_count": message_count,
+            "intent": intent_result.intent,
+            "route": "product_tool_plus_rag",
+            "tool_names": [
+                record.action.tool_name for record in tool_response.tool_calls
+            ],
+            "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
+            "cost_summary": cost_summary.model_dump(),
+        }
+        events = self._cost_events_by_session.setdefault(request.session_id, [])
+        if events:
+            events[-1] = event
+        else:
+            events.append(event)
+
+        state = tool_response.session_state
+        state["agent_version"] = "0.16.0"
+        state["model_answer"] = model_answer.model_dump()
+        state["degradation"] = {
+            "degraded": degraded,
+            "error_category": degradation_category,
+            "retry_count": state.get("degradation", {}).get("retry_count", 0),
+            "fallback_used": not model_answer.used_model,
+            "reason": model_answer.fallback_reason,
+        }
+        state["tool_calling"]["joint_answer"] = True
+        state["rag"] = {
+            "status": (
+                "unavailable"
+                if retrieval_error
+                else "completed_product_joint_route"
+            ),
+            "mode": "hybrid_rag_for_product_tool_joint_answer",
+            "vector_search": retrieval_outcome is not None,
+            "keyword_search": retrieval_outcome is not None,
+            "rewrite": rewrite.model_dump(),
+            "plan": (
+                retrieval_outcome.plan.model_dump()
+                if retrieval_outcome is not None
+                else None
+            ),
+            "cache": (
+                retrieval_outcome.cache if retrieval_outcome is not None else None
+            ),
+            "candidate_count": (
+                len(retrieval_outcome.candidates)
+                if retrieval_outcome is not None
+                else 0
+            ),
+            "retrieved_count": len(reliable_hits),
+            "citation_count": len(citations),
+            "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
+            "rerank_mode": rerank_outcome.mode if rerank_outcome else "skipped",
+            "rerank_model": rerank_outcome.model if rerank_outcome else None,
+            "rerank_error": rerank_outcome.error if rerank_outcome else retrieval_error,
+            "retrieval_error": retrieval_error,
+        }
+        state["rag_quality"] = {"status": "skipped_product_joint_route"}
+        state["tool_rag"] = {
+            "mode": "product_tool_plus_rag",
+            "status": "completed" if citations else "partial_tool_only",
+            "answer_sources": ["tool", "rag"] if citations else ["tool"],
+            "current_fact_source": "tool_observation",
+            "stable_knowledge_source": "rag_citations" if citations else None,
+            "tool_names": [
+                record.action.tool_name for record in tool_response.tool_calls
+            ],
+            "citation_chunk_ids": [citation.chunk_id for citation in citations],
+            "joint_answer_complete": bool(successful_observations and citations),
+            "source_boundary": {
+                "current_price_inventory": "tool",
+                "product_and_promotion_knowledge": "rag",
+            },
+        }
+        state["cost_log"] = {"event_count": len(events), "latest": event}
+        state["next_gap"] = (
+            "已支持商品 Tool + RAG 联合回答；下一步治理重复的工具校验、错误处理与日志链路。"
+        )
+        return ChatResponse(
+            session_id=request.session_id,
+            answer=model_answer.answer,
+            intent=intent_result.intent,
+            intent_result=intent_result,
+            citations=citations,
+            tool_calls=tool_response.tool_calls,
+            clarification=None,
+            next_action=tool_response.next_action,
+            risk_level=tool_response.risk_level,
+            needs_human_approval=False,
+            degraded=degraded,
+            cost_summary=cost_summary,
+            reasoning_summary=[
+                "商品当前价格、库存和活动状态来自受控只读工具 Observation。",
+                "商品卖点与平台活动规则来自 Hybrid RAG 的可靠命中并生成 citations。",
+                "联合回答只接收脱敏 Observation 和可靠知识块，不接收原始业务 payload。",
+                "平台规则不代表当前 SKU 必然享有优惠，最终优惠以结算页为准。",
+            ],
+            session_state=state,
+        )
+
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Classify, retrieve vectors, generate a grounded answer, and cite hits."""
 
@@ -657,6 +889,15 @@ class CustomerServiceAgent:
         )
         if is_high_risk_write_request(request.user_message):
             return self._high_risk_response(request, intent_result, message_count)
+        if is_product_tool_rag_query(
+            intent_result.intent,
+            request.user_message,
+        ):
+            return self._chat_with_product_tool_rag(
+                request,
+                intent_result,
+                message_count,
+            )
         if should_route_to_realtime_tool(
             intent_result.intent,
             request.user_message,
@@ -845,7 +1086,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.15.0",
+            "agent_version": "0.16.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

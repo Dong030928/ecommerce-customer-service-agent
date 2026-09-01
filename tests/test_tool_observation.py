@@ -111,7 +111,7 @@ class ToolObservationTests(unittest.TestCase):
         self.assertEqual(observation.next_action, "answer_user")
         self.assertEqual(observation.facts["logistics_status"], "IN_TRANSIT")
 
-    def test_product_observation_omits_long_description_and_promotion(self) -> None:
+    def test_product_observation_omits_private_product_and_promotion_fields(self) -> None:
         observation = self.runtime.execute(
             ToolAction(
                 tool_name="get_product_inventory",
@@ -125,7 +125,7 @@ class ToolObservationTests(unittest.TestCase):
         self.assertNotIn("PRIVATE-LONG-DESCRIPTION", serialized)
         self.assertNotIn("PRIVATE-PROMOTION-RULE", serialized)
         self.assertIn("product.description", observation.omitted_fields)
-        self.assertIn("product.promotion", observation.omitted_fields)
+        self.assertIn("promotion.rule", observation.omitted_fields)
         self.assertEqual(observation.facts["inventory"], 18)
 
     def test_refund_observation_keeps_status_but_removes_private_reason(self) -> None:

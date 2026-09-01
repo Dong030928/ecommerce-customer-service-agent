@@ -102,6 +102,15 @@ class ToolCallingTests(unittest.TestCase):
                         "price": "299.00",
                         "stock": 18,
                         "active": True,
+                        "promotion": {
+                            "id": 99,
+                            "promotionName": "春季音频节会员价",
+                            "discountSummary": "金卡会员活动价",
+                            "promotionPrice": "259.00",
+                            "requiredMemberLevel": "gold",
+                            "conditionSummary": "金卡会员专享",
+                            "startAt": "PRIVATE-INTERNAL-START",
+                        },
                     }
                 ]
             else:
@@ -198,7 +207,12 @@ class ToolCallingTests(unittest.TestCase):
 
         self.assertEqual(observation.status, "success")
         self.assertIn("299.00", observation.summary)
+        self.assertIn("259.00", observation.summary)
         self.assertIn("18", observation.summary)
+        self.assertEqual(observation.facts["promotion_price"], "259.00")
+        self.assertIn("promotion.id", observation.omitted_fields)
+        self.assertIn("promotion.startAt", observation.omitted_fields)
+        self.assertNotIn("PRIVATE-INTERNAL-START", observation.model_dump_json())
         self.assertEqual(self.requests[0].url.params["keyword"], "SKU-AUD-101")
 
     def test_refund_status_intent_has_priority_over_refund_request(self) -> None:
