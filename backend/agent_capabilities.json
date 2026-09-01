@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.16.0-product-tool-rag",
-    "title": "Product Tool And RAG Joint Answer",
-    "summary": "当前版本在同一商品回答中联合使用实时工具 Observation 与稳定知识 RAG citations，同时保持两类事实的来源边界。"
+    "id": "v0.17.0-hooks-governance",
+    "title": "Lifecycle Hooks Governance",
+    "summary": "当前版本以请求级 Hooks 统一治理工具前置校验、Observation 脱敏、异常降级与公开完成摘要。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.16.0"
+    "version": "0.17.0"
   },
   "endpoints": {
     "health": true,
@@ -72,7 +72,13 @@
     "workflow": false,
     "human_approval": false,
     "memory": false,
-    "hooks": false,
+    "hooks": true,
+    "pre_tool_call_hook": true,
+    "post_tool_call_hook": true,
+    "error_hook": true,
+    "completion_hook": true,
+    "safe_governance_summary": true,
+    "mcp": false,
     "trace": false,
     "evaluation": false,
     "cost_summary": true
@@ -84,7 +90,7 @@
     "workflow": "售后工作流还没有接入。",
     "human_approval": "当前只返回 needs_human_approval 和 transfer_to_human 边界，真实 HITL 审批流程还没有接入。",
     "memory": "多轮记忆还没有接入。",
-    "hooks": "Hooks 治理还没有接入。",
+    "mcp": "工具、资源和 Prompt 还没有通过 MCP 标准化接入。",
     "trace": "Trace 公开轨迹还没有接入。",
     "evaluation": "Evaluation 回归评测将在后续版本接入。"
   }

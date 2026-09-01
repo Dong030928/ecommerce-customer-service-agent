@@ -33,8 +33,9 @@ class SuccessfulToolService:
         request: ChatRequest,
         intent: str,
         clarification_plan: object | None = None,
+        hooks: object | None = None,
     ) -> ToolCallingOutcome:
-        del request, intent, clarification_plan
+        del request, intent, clarification_plan, hooks
         record = ToolCallRecord(
             action=ToolAction(
                 tool_name="get_order_status",

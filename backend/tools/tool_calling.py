@@ -14,6 +14,7 @@ from api.schemas import (
     ToolObservation,
 )
 from config.settings import TOOL_CALLING_RECURSION_LIMIT
+from hooks.manager import HookManager
 from models.llm_client import create_tool_calling_model
 from tools.contracts import TOOL_SPECS
 from tools.langchain_tools import build_langchain_tools, tool_action_reason
@@ -132,6 +133,7 @@ class ToolCallingService:
         request: ChatRequest,
         intent: Intent,
         clarification_plan: ClarificationPlan | None = None,
+        hooks: HookManager | None = None,
     ) -> ToolCallingOutcome:
         available_tools = [spec.model_dump() for spec in TOOL_SPECS.values()]
         plan_hint = (
@@ -143,7 +145,7 @@ class ToolCallingService:
             from langchain.agents import create_agent
 
             model = self._model_factory()
-            tools = build_langchain_tools(request, self._runtime)
+            tools = build_langchain_tools(request, self._runtime, hooks)
             agent = create_agent(
                 model=model,
                 tools=tools,

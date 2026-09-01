@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.0
+
+- 新增请求级 `HookManager`，统一承载 `pre_tool_call`、`post_tool_call`、`on_error` 和 `on_completion` 生命周期；
+- 将前置 Hook 接入真实 `ToolRuntime`，确保工具白名单、参数与只读边界信号发生在业务读取之前；
+- 将后置 Hook 接入 Observation 出口，递归清理手机号、邮箱、凭证字段和外部指令污染；
+- Hook 仅公开可信身份是否存在，不记录 `runtime_user_id` 具体值，也不暴露原始 ToolResult 或隐藏推理链；
+- 工具错误、模型异常和检索异常统一生成安全的降级事件，保留稳定错误类别与尝试次数；
+- 每条响应路由都生成一次 `hook_completion`，汇总工具、脱敏、污染、降级和高风险命中数量；
+- Hooks 只负责横切治理，不执行退款、取消、赔付等写操作，也不冒充真实 HITL 审批；
+- 保留商品 Tool + RAG 联合回答、Hybrid RAG、结构化澄清、有限重试和原始结果隔离能力；
+- 新增 Hook 顺序、业务读取前置校验、结果脱敏、异常治理和公开摘要回归测试。
+
 ## 0.16.0
 
 - 新增商品 Tool + RAG 联合路由，在同一响应中返回实时 `tool_calls` 与稳定知识 `citations`；

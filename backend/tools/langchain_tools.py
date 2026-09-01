@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from api.schemas import ChatRequest, ToolAction
+from hooks.manager import HookManager
 from tools.contracts import TOOL_SPECS
 from tools.tool_runtime import ToolRuntime
 
@@ -23,6 +24,7 @@ def tool_action_reason(tool_name: str) -> str:
 def build_langchain_tools(
     request: ChatRequest,
     runtime: ToolRuntime,
+    hooks: HookManager | None = None,
 ) -> list[Any]:
     """Import LangChain only on the realtime route and keep execution controlled."""
 
@@ -36,6 +38,7 @@ def build_langchain_tools(
                 reason=tool_action_reason(tool_name),
             ),
             request,
+            hooks,
         )
         return observation.model_dump_json()
 

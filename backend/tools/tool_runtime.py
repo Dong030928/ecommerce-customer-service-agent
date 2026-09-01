@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from api.schemas import ChatRequest, ToolAction, ToolObservation, ToolResult
 from degradation.fallbacks import classify_error_code
 from integrations.ecommerce_client import EcommerceClient, EcommerceClientError
@@ -12,6 +14,9 @@ from tools.runtime_context import (
     current_user_orders_truncated,
     order_candidates,
 )
+
+if TYPE_CHECKING:
+    from hooks.manager import HookManager
 
 
 def _validation_result(action: ToolAction) -> ToolResult | None:
@@ -228,7 +233,24 @@ class ToolRuntime:
                 )
         raise AssertionError("tool retry loop exhausted without a result")
 
-    def execute(self, action: ToolAction, request: ChatRequest) -> ToolObservation:
-        """Compress raw ToolResult before it crosses the tool boundary."""
+    def execute(
+        self,
+        action: ToolAction,
+        request: ChatRequest,
+        hooks: HookManager | None = None,
+    ) -> ToolObservation:
+        """Run lifecycle hooks around execution and expose only an Observation."""
 
-        return build_observation(self.execute_raw(action, request))
+        if hooks is not None:
+            hooks.pre_tool_call(action, request, TOOL_SPECS.get(action.tool_name))
+        observation = build_observation(self.execute_raw(action, request))
+        if hooks is not None:
+            observation = hooks.post_tool_call(observation)
+            if observation.status == "error":
+                hooks.on_error(
+                    action.tool_name,
+                    observation.error_category,
+                    observation.summary,
+                    observation.attempts,
+                )
+        return observation

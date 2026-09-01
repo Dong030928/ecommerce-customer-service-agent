@@ -38,6 +38,12 @@ ErrorCategory = Literal[
     "system_error",
     "high_risk_write_blocked",
 ]
+HookType = Literal[
+    "pre_tool_call",
+    "post_tool_call",
+    "on_error",
+    "on_completion",
+]
 ClarificationSource = Literal["model", "backend_fallback", "backend_guard"]
 RetrievalScene = Literal[
     "promotion",
@@ -144,6 +150,34 @@ class DegradationState(BaseModel):
     retry_count: int = Field(default=0, ge=0)
     fallback_used: bool = False
     reason: str | None = None
+
+
+class HookEvent(BaseModel):
+    """Public-safe lifecycle event; it never contains raw payloads or reasoning."""
+
+    sequence: int = Field(ge=1)
+    hook_type: HookType
+    target_name: str
+    action: str
+    result: str
+    reason: str
+    safe_summary: dict[str, Any] = Field(default_factory=dict)
+    redacted: bool = False
+    pollution_detected: bool = False
+    degraded: bool = False
+
+
+class HookCompletion(BaseModel):
+    """Bounded governance summary emitted once when a request finishes."""
+
+    hook_count: int = Field(ge=0)
+    tool_count: int = Field(ge=0)
+    touched_tools: list[str] = Field(default_factory=list)
+    redacted_count: int = Field(ge=0)
+    pollution_count: int = Field(ge=0)
+    degraded_count: int = Field(ge=0)
+    risk_hit_count: int = Field(ge=0)
+    safe_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClarificationCandidate(BaseModel):
@@ -352,6 +386,8 @@ class ChatResponse(BaseModel):
     intent_result: IntentResult
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    hook_events: list[HookEvent] = Field(default_factory=list)
+    hook_completion: HookCompletion | None = None
     clarification: ClarificationRequest | None = None
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
@@ -389,6 +425,10 @@ ToolCallRecord.model_rebuild(
 DegradationState.model_rebuild(
     _types_namespace={"ErrorCategory": ErrorCategory}
 )
+HookEvent.model_rebuild(
+    _types_namespace={"Any": Any, "HookType": HookType}
+)
+HookCompletion.model_rebuild(_types_namespace={"Any": Any})
 ClarificationCandidate.model_rebuild()
 ClarificationRequest.model_rebuild(
     _types_namespace={"ClarificationCandidate": ClarificationCandidate}
@@ -425,6 +465,8 @@ ChatResponse.model_rebuild(
         "Citation": Citation,
         "Intent": Intent,
         "IntentResult": IntentResult,
+        "HookCompletion": HookCompletion,
+        "HookEvent": HookEvent,
         "NextAction": NextAction,
         "RiskLevel": RiskLevel,
         "ClarificationRequest": ClarificationRequest,

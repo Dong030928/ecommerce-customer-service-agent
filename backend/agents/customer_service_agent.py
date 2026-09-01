@@ -10,6 +10,7 @@ from api.schemas import (
     ChatRequest,
     ChatResponse,
     ClarificationRequest,
+    DegradationState,
     Intent,
     IntentResult,
     KnowledgeHit,
@@ -29,6 +30,7 @@ from degradation.fallbacks import (
     is_high_risk_write_request,
 )
 from embeddings.client import EmbeddingClient, read_embedding_model_name
+from hooks.manager import HookManager
 from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
@@ -416,6 +418,49 @@ class CustomerServiceAgent:
         self._clarification_base_url = clarification_base_url
         self._clarification_model_name = clarification_model_name
 
+    def _finalize_with_hooks(
+        self,
+        response: ChatResponse,
+        hooks: HookManager,
+    ) -> ChatResponse:
+        """Attach one bounded lifecycle summary to every public response path."""
+
+        degradation = DegradationState.model_validate(
+            response.session_state.get("degradation", {})
+        )
+        if response.degraded and not any(
+            event.hook_type == "on_error" for event in hooks.events
+        ):
+            hooks.on_error(
+                "agent_response",
+                degradation.error_category,
+                degradation.reason or "当前请求已进入安全降级路径。",
+                degradation.retry_count + 1,
+            )
+        completion = hooks.on_completion(
+            next_action=response.next_action,
+            risk_level=response.risk_level,
+            degradation=degradation,
+        )
+        state = dict(response.session_state)
+        state["agent_version"] = "0.17.0"
+        state["hooks"] = {
+            "events": [event.model_dump() for event in hooks.events],
+            "completion": completion.model_dump(),
+            "full_trace_available": False,
+            "hitl_approval_performed": False,
+        }
+        state["next_gap"] = (
+            "工具链路已形成统一 Hooks 治理；下一步将工具、资源和 Prompt 接入标准化 MCP 来源。"
+        )
+        return response.model_copy(
+            update={
+                "hook_events": list(hooks.events),
+                "hook_completion": completion,
+                "session_state": state,
+            }
+        )
+
     def _high_risk_response(
         self,
         request: ChatRequest,
@@ -457,7 +502,7 @@ class CustomerServiceAgent:
                 "请求已标记为高风险并转入人工确认边界。",
             ],
             session_state={
-                "agent_version": "0.16.0",
+                "agent_version": "0.17.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -495,6 +540,7 @@ class CustomerServiceAgent:
         request: ChatRequest,
         intent_result: IntentResult,
         message_count: int,
+        hooks: HookManager,
     ) -> ChatResponse:
         """Run realtime reads without sending trusted identity to the planning model."""
 
@@ -537,6 +583,7 @@ class CustomerServiceAgent:
                 request,
                 intent_result.intent,
                 clarification_plan,
+                hooks=hooks,
             )
             clarification = post_tool_clarification(outcome.tool_calls)
             if clarification is not None:
@@ -610,7 +657,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.16.0",
+                "agent_version": "0.17.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -665,10 +712,16 @@ class CustomerServiceAgent:
         request: ChatRequest,
         intent_result: IntentResult,
         message_count: int,
+        hooks: HookManager,
     ) -> ChatResponse:
         """Combine current product facts with stable, cited product knowledge."""
 
-        tool_response = self._chat_with_tools(request, intent_result, message_count)
+        tool_response = self._chat_with_tools(
+            request,
+            intent_result,
+            message_count,
+            hooks,
+        )
         successful_observations = [
             record.observation
             for record in tool_response.tool_calls
@@ -789,7 +842,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.16.0"
+        state["agent_version"] = "0.17.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -880,6 +933,7 @@ class CustomerServiceAgent:
             self._message_count_by_session.get(request.session_id, 0) + 1
         )
         message_count = self._message_count_by_session[request.session_id]
+        hooks = HookManager()
         intent_result = classify_intent(
             request.user_message,
             http_client=self._classifier_http_client,
@@ -888,21 +942,36 @@ class CustomerServiceAgent:
             model=self._classifier_model_name,
         )
         if is_high_risk_write_request(request.user_message):
-            return self._high_risk_response(request, intent_result, message_count)
+            return self._finalize_with_hooks(
+                self._high_risk_response(request, intent_result, message_count),
+                hooks,
+            )
         if is_product_tool_rag_query(
             intent_result.intent,
             request.user_message,
         ):
-            return self._chat_with_product_tool_rag(
-                request,
-                intent_result,
-                message_count,
+            return self._finalize_with_hooks(
+                self._chat_with_product_tool_rag(
+                    request,
+                    intent_result,
+                    message_count,
+                    hooks,
+                ),
+                hooks,
             )
         if should_route_to_realtime_tool(
             intent_result.intent,
             request.user_message,
         ):
-            return self._chat_with_tools(request, intent_result, message_count)
+            return self._finalize_with_hooks(
+                self._chat_with_tools(
+                    request,
+                    intent_result,
+                    message_count,
+                    hooks,
+                ),
+                hooks,
+            )
 
         rewrite = rewrite_retrieval_query(
             request.user_message,
@@ -1086,7 +1155,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.16.0",
+            "agent_version": "0.17.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1193,18 +1262,21 @@ class CustomerServiceAgent:
             },
             "next_gap": "已支持错误分类、只读超时有限重试和安全降级；下一步接入可恢复的 Workflow 与真实 HITL 审批。",
         }
-        return ChatResponse(
-            session_id=request.session_id,
-            answer=model_answer.answer,
-            intent=intent_result.intent,
-            intent_result=intent_result,
-            citations=citations,
-            tool_calls=[],
-            next_action="answer_user",
-            risk_level="low",
-            needs_human_approval=False,
-            degraded=degraded,
-            cost_summary=cost_summary,
-            reasoning_summary=reasoning_summary,
-            session_state=session_state,
+        return self._finalize_with_hooks(
+            ChatResponse(
+                session_id=request.session_id,
+                answer=model_answer.answer,
+                intent=intent_result.intent,
+                intent_result=intent_result,
+                citations=citations,
+                tool_calls=[],
+                next_action="answer_user",
+                risk_level="low",
+                needs_human_approval=False,
+                degraded=degraded,
+                cost_summary=cost_summary,
+                reasoning_summary=reasoning_summary,
+                session_state=session_state,
+            ),
+            hooks,
         )
