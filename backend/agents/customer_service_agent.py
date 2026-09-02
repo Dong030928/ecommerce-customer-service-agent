@@ -31,6 +31,7 @@ from degradation.fallbacks import (
 )
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from hooks.manager import HookManager
+from mcp_catalog.catalog import MCP_CATALOG
 from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
@@ -442,8 +443,13 @@ class CustomerServiceAgent:
             risk_level=response.risk_level,
             degradation=degradation,
         )
+        mcp_context = MCP_CATALOG.binding_summary(
+            [record.action for record in response.tool_calls],
+            response.risk_level,
+        )
         state = dict(response.session_state)
-        state["agent_version"] = "0.17.0"
+        state["agent_version"] = "0.18.0"
+        state["mcp"] = mcp_context.model_dump()
         state["hooks"] = {
             "events": [event.model_dump() for event in hooks.events],
             "completion": completion.model_dump(),
@@ -451,12 +457,22 @@ class CustomerServiceAgent:
             "hitl_approval_performed": False,
         }
         state["next_gap"] = (
-            "工具链路已形成统一 Hooks 治理；下一步将工具、资源和 Prompt 接入标准化 MCP 来源。"
+            "工具、Resource 和 Prompt 已由本地 MCP-style 目录统一提供；"
+            "下一步为退款等高风险写操作接入可恢复 Workflow 与真实 HITL。"
+        )
+        reasoning_summary = list(response.reasoning_summary)
+        reasoning_summary.extend(
+            [
+                "工具契约来自本地 MCP-style Catalog，并携带 Resource 与 Prompt 绑定。",
+                "MCP-style 目录只改变能力来源；Tool Use 仍负责执行，Hooks 仍负责治理。",
+            ]
         )
         return response.model_copy(
             update={
                 "hook_events": list(hooks.events),
                 "hook_completion": completion,
+                "mcp_context": mcp_context,
+                "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
         )
@@ -502,7 +518,7 @@ class CustomerServiceAgent:
                 "请求已标记为高风险并转入人工确认边界。",
             ],
             session_state={
-                "agent_version": "0.17.0",
+                "agent_version": "0.18.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -657,7 +673,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.17.0",
+                "agent_version": "0.18.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -842,7 +858,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.17.0"
+        state["agent_version"] = "0.18.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1155,7 +1171,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.17.0",
+            "agent_version": "0.18.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

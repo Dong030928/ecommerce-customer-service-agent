@@ -81,6 +81,13 @@ class HookGovernanceTests(unittest.TestCase):
             [event.hook_type for event in hooks.events],
             ["pre_tool_call", "post_tool_call"],
         )
+        self.assertEqual(
+            [event.action for event in hooks.events],
+            [
+                "validate_mcp_tool_arguments",
+                "sanitize_mcp_tool_observation",
+            ],
+        )
         serialized = observation.model_dump_json()
         self.assertNotIn("13800138000", serialized)
         self.assertNotIn("bad@example.com", serialized)
@@ -125,6 +132,10 @@ class HookGovernanceTests(unittest.TestCase):
             ["pre_tool_call", "post_tool_call", "on_error"],
         )
         self.assertEqual(hooks.events[0].result, "blocked")
+        self.assertEqual(
+            hooks.events[-1].action,
+            "normalize_mcp_tool_error",
+        )
 
     def test_hook_summary_never_exposes_runtime_identity(self) -> None:
         hooks = HookManager()
@@ -161,7 +172,7 @@ class HookGovernanceTests(unittest.TestCase):
         )
         self.assertEqual(response.hook_completion.hook_count, 1)
         self.assertEqual(response.hook_completion.tool_count, 0)
-        self.assertEqual(response.session_state["agent_version"], "0.17.0")
+        self.assertEqual(response.session_state["agent_version"], "0.18.0")
         self.assertFalse(response.session_state["hooks"]["full_trace_available"])
 
     def test_high_risk_route_records_degradation_but_not_hitl_approval(self) -> None:

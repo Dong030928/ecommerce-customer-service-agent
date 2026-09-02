@@ -151,7 +151,8 @@ class ToolCallingService:
                 tools=tools,
                 system_prompt=(
                     "你是电商客服 Agent。实时订单、物流、商品库存、价格或退款进度"
-                    "必须通过给定只读工具核验。只能提交工具契约声明的参数，不能提交、"
+                    "必须通过 MCP-style 目录提供的只读工具核验。目录只提供能力描述，"
+                    "Tool Use 仍负责选择与执行。只能提交工具契约声明的参数，不能提交、"
                     "猜测或覆盖 user_id；当前用户身份由后端从可信 Runtime Context 注入。"
                     "不要调用写操作，也不要根据知识库猜实时状态。"
                     "后端预校验的 ClarificationPlan 如下；必须使用其中的目标工具和"
@@ -171,6 +172,7 @@ class ToolCallingService:
                 tool_calls=records,
                 state={
                     "create_agent": True,
+                    "tool_source": "mcp_catalog",
                     "available_tools": available_tools,
                     "message_types": [
                         message.__class__.__name__ for message in messages
@@ -194,6 +196,7 @@ class ToolCallingService:
                 tool_calls=[],
                 state={
                     "create_agent": False,
+                    "tool_source": "mcp_catalog",
                     "skip_reason": "tool_calling_unavailable",
                     "available_tools": available_tools,
                     "message_types": [],
@@ -208,6 +211,7 @@ class ToolCallingService:
                 tool_calls=[],
                 state={
                     "create_agent": True,
+                    "tool_source": "mcp_catalog",
                     "skip_reason": "tool_calling_failed",
                     "available_tools": available_tools,
                     "message_types": [],

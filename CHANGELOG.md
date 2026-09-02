@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18.0
+
+- 新增本地 `MCPCatalog`，统一组织五个只读工具定义、边界 Resource 和 Observation Prompt；
+- `tools/contracts.py` 改为从 Catalog 转换生成 `ToolSpec`，现有规划、LangChain Tool Use 和 ToolRuntime 继续复用统一契约；
+- 新增 `MCPToolDefinition`、`MCPResource`、`MCPPrompt` 与 `MCPBindingSummary` API 契约；
+- 顶层响应和 `session_state.mcp` 返回工具来源、实际选中工具、可用工具及 Resource/Prompt URI；
+- 工具前置、后置、异常和完成 Hook 增加 MCP Tool Use 语义，同时继续隐藏 Runtime 身份值、原始 ToolResult 与隐藏推理链；
+- 高风险写请求只绑定高风险 Resource 和转人工 Prompt，不把退款、取消或赔付降级为普通工具调用；
+- Catalog 不维护业务假数据，实时事实仍来自电商业务接口和可信 Runtime Context；
+- 明确当前为本地 MCP-style 组织层，`remote_server_connected=false`，不冒充完整远程 MCP Server；
+- 保留 Tool + RAG 联合回答、Hybrid RAG、结构化澄清、有限重试、Hooks 治理和安全降级能力；
+- 新增 Catalog 单一工具来源、绑定解析、工具/非工具/高风险响应摘要回归测试。
+
 ## 0.17.0
 
 - 新增请求级 `HookManager`，统一承载 `pre_tool_call`、`post_tool_call`、`on_error` 和 `on_completion` 生命周期；

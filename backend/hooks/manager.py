@@ -95,10 +95,11 @@ class HookManager:
         return self._event(
             hook_type="pre_tool_call",
             target_name=action.tool_name,
-            action="validate_arguments_and_runtime_context",
+            action="validate_mcp_tool_arguments",
             result="blocked" if blocked else "allowed",
             reason=(
-                "工具执行前统一检查白名单、必填参数、只读边界和可信身份存在性。"
+                "MCP-style 目录提供工具 schema，Hook 统一检查白名单、必填参数、"
+                "只读边界和可信身份存在性。"
             ),
             safe_summary={
                 "tool": action.tool_name,
@@ -139,10 +140,10 @@ class HookManager:
         self._event(
             hook_type="post_tool_call",
             target_name=observation.tool_name,
-            action="sanitize_observation",
+            action="sanitize_mcp_tool_observation",
             result="sanitized" if redacted or pollution else "passed",
             reason=(
-                "工具结果进入模型和公开响应前统一脱敏，并中和外部指令污染。"
+                "目录工具结果进入模型和公开响应前统一脱敏，并中和外部指令污染。"
             ),
             safe_summary={
                 "tool": observation.tool_name,
@@ -178,10 +179,11 @@ class HookManager:
         return self._event(
             hook_type="on_error",
             target_name=target_name,
-            action="normalize_error_for_degradation",
+            action="normalize_mcp_tool_error",
             result="degraded",
             reason=(
-                "工具、模型或检索异常被归一为公开错误类别，不输出原始异常载荷。"
+                "MCP-style 只改变工具来源；工具、模型或检索异常仍被归一为公开"
+                "错误类别，不输出原始异常载荷。"
             ),
             safe_summary={
                 "error_category": error_category,
@@ -210,16 +212,18 @@ class HookManager:
             "degraded": degradation.degraded,
             "error_category": degradation.error_category,
             "touched_tools": sorted(self._touched_tools),
+            "tool_source": "mcp_catalog",
             "raw_tool_result_exposed": False,
             "hidden_reasoning_exposed": False,
         }
         self._event(
             hook_type="on_completion",
             target_name="chat_request",
-            action="summarize_governance",
+            action="summarize_mcp_tool_governance",
             result="completed",
             reason=(
-                "请求结束时输出有界治理摘要，供调试与测试观察，不输出隐藏推理链。"
+                "请求结束时输出 MCP Tool Use 的有界治理摘要，供调试与测试观察，"
+                "不输出隐藏推理链。"
             ),
             safe_summary=safe_summary,
             degraded=degradation.degraded,

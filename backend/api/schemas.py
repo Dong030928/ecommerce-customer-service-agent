@@ -98,6 +98,60 @@ class ToolSpec(BaseModel):
     risk_level: RiskLevel = "low"
 
 
+class MCPToolDefinition(BaseModel):
+    """MCP-style source definition with resource and prompt bindings."""
+
+    name: str
+    description: str
+    required: list[str]
+    parameters_schema: dict[str, str]
+    read_only: bool = True
+    risk_level: RiskLevel = "low"
+    resource_uris: list[str] = Field(default_factory=list)
+    prompt_ids: list[str] = Field(default_factory=list)
+
+    def to_tool_spec(self) -> ToolSpec:
+        """Adapt the catalog definition to the existing Tool Use contract."""
+
+        return ToolSpec(
+            name=self.name,
+            description=self.description,
+            required=list(self.required),
+            parameters_schema=dict(self.parameters_schema),
+            read_only=self.read_only,
+            risk_level=self.risk_level,
+        )
+
+
+class MCPResource(BaseModel):
+    """Stable boundary material bound to one or more catalog tools."""
+
+    uri: str
+    title: str
+    content: str
+
+
+class MCPPrompt(BaseModel):
+    """Reusable public-safety wording bound to a catalog tool."""
+
+    prompt_id: str
+    title: str
+    content: str
+
+
+class MCPBindingSummary(BaseModel):
+    """Public-safe summary of catalog bindings used by one response."""
+
+    tool_source: Literal["mcp_catalog"] = "mcp_catalog"
+    selected_tool: str | None = None
+    selected_tools: list[str] = Field(default_factory=list)
+    available_tools: list[str] = Field(default_factory=list)
+    resources: list[str] = Field(default_factory=list)
+    prompts: list[str] = Field(default_factory=list)
+    boundary: str
+    remote_server_connected: bool = False
+
+
 class ToolAction(BaseModel):
     """Model-proposed tool name and arguments before backend validation."""
 
@@ -388,6 +442,7 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     hook_events: list[HookEvent] = Field(default_factory=list)
     hook_completion: HookCompletion | None = None
+    mcp_context: MCPBindingSummary | None = None
     clarification: ClarificationRequest | None = None
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
@@ -403,6 +458,12 @@ IntentResult.model_rebuild(
     _types_namespace={"Intent": Intent, "IntentSource": IntentSource}
 )
 ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
+MCPToolDefinition.model_rebuild(
+    _types_namespace={"RiskLevel": RiskLevel, "ToolSpec": ToolSpec}
+)
+MCPResource.model_rebuild()
+MCPPrompt.model_rebuild()
+MCPBindingSummary.model_rebuild(_types_namespace={"Literal": Literal})
 ToolAction.model_rebuild(_types_namespace={"Any": Any})
 ToolResult.model_rebuild(
     _types_namespace={
@@ -467,6 +528,7 @@ ChatResponse.model_rebuild(
         "IntentResult": IntentResult,
         "HookCompletion": HookCompletion,
         "HookEvent": HookEvent,
+        "MCPBindingSummary": MCPBindingSummary,
         "NextAction": NextAction,
         "RiskLevel": RiskLevel,
         "ClarificationRequest": ClarificationRequest,

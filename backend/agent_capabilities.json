@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.17.0-hooks-governance",
-    "title": "Lifecycle Hooks Governance",
-    "summary": "当前版本以请求级 Hooks 统一治理工具前置校验、Observation 脱敏、异常降级与公开完成摘要。"
+    "id": "v0.18.0-mcp-tool-use",
+    "title": "MCP-style Catalog And Tool Use",
+    "summary": "当前版本由本地 MCP-style Catalog 统一提供工具、Resource 和 Prompt 绑定，再交给现有 Tool Use 与 Hooks 链路执行和治理。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.17.0"
+    "version": "0.18.0"
   },
   "endpoints": {
     "health": true,
@@ -78,7 +78,12 @@
     "error_hook": true,
     "completion_hook": true,
     "safe_governance_summary": true,
-    "mcp": false,
+    "mcp": true,
+    "mcp_tools": true,
+    "mcp_resources": true,
+    "mcp_prompts": true,
+    "mcp_binding_summary": true,
+    "remote_mcp_server": false,
     "trace": false,
     "evaluation": false,
     "cost_summary": true
@@ -90,7 +95,7 @@
     "workflow": "售后工作流还没有接入。",
     "human_approval": "当前只返回 needs_human_approval 和 transfer_to_human 边界，真实 HITL 审批流程还没有接入。",
     "memory": "多轮记忆还没有接入。",
-    "mcp": "工具、资源和 Prompt 还没有通过 MCP 标准化接入。",
+    "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "trace": "Trace 公开轨迹还没有接入。",
     "evaluation": "Evaluation 回归评测将在后续版本接入。"
   }
