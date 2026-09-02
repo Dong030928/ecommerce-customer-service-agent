@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.18.0
+## v0.19.0
 
 当前版本提供：
 
@@ -78,6 +78,13 @@
 - 未调用工具与高风险拦截会生成不同绑定摘要，高风险 Resource 不会绕过 Workflow/HITL；
 - Catalog 不保存业务假数据，订单、物流、退款和商品当前事实仍来自可信业务接口或 Runtime Context；
 - 当前实现是课程阶段的本地 MCP-style 组织层，不宣称已连接完整远程 MCP Server；
+- 增加入口 `TaskPlanner`，统一生成可校验的 `RoutePlan`，区分 General、RAG、Tool、Tool + RAG 和 Workflow 信号；
+- 高置信业务规则直接生成路线，低置信问题才调用轻量规划模型补充结构化草案；
+- 规划模型只接收用户问题和公开工具候选，不接收 Runtime 用户身份或业务 payload；
+- 模型提交的工具、知识域、实体引用和上下文字段均经过允许列表收窄；
+- `RoutePlan.required_tools` 会限制 LangChain Tool Use 实际可见的工具集合；
+- 高风险写操作会被最终安全规则覆盖为 `requires_workflow=true`，但当前不宣称 Workflow 已执行；
+- 顶层返回 `route_plan` 与公开安全的 `planner_trace`，不暴露隐藏推理链；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -89,9 +96,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前版本形成三条可观察路由：活动规则、售后政策等稳定知识走“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；订单、物流、商品当前价格/库存和退款进度等纯实时事实走“MCP-style Catalog → ClarificationPlan → pre-tool Hook → LangChain Tool Use → 内部 ToolResult → post-tool/error Hook → 安全 Observation”；同时询问商品当前事实与稳定知识时走“Catalog 商品工具 Observation + 商品/活动平衡检索 + 联合 Grounded Answer”。每条路由结束时都生成一次公开安全的 completion Hook，并返回本轮 MCP 绑定摘要。Runtime Context 不进入 Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入 Hook 或公开响应，RAG 规则也不会被冒充为当前 SKU 的实时事实。
+当前入口先执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG；高风险写请求只产生 Workflow 路由信号。每条路由结束时都生成 completion Hook，并返回 Planner 与 MCP 摘要。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入公开响应。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前工具只支持只读查询；已经支持缺参/多候选澄清、ToolResult 压缩、错误分类、超时有限重试、安全降级、商品 Tool + RAG 联合回答、Hooks 治理以及本地 MCP-style 能力目录。高风险写请求只会被拦截并返回人工确认信号，MCP 与 Hooks 都不等同于 HITL；尚未实现可恢复工作流、真实 HITL 审批、多轮澄清状态记忆或远程 MCP Server 连接。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；工具仍只支持只读查询。高风险请求中的 `requires_workflow` 只是受控路径信号，MCP、Hooks 和 Planner 都不等同于 HITL；尚未实现可恢复工作流、真实 HITL 审批、多轮澄清状态记忆或远程 MCP Server 连接。
 
 ## 项目结构
 
@@ -109,6 +116,7 @@ backend/
   mcp_catalog/  # MCP-style 工具、Resource、Prompt 统一目录与绑定摘要
   models/       # OpenAI-compatible 分类和回答模型客户端
   observability/ # ToolResult 到安全 Observation 的压缩层
+  planner/      # TaskPlanner、RoutePlan 白名单约束与公开 PlannerTrace
   rag/          # 文档切片、版本化索引、检索缓存、混合召回、重排与质量检查
   tools/        # 只读工具契约、规划、可信执行与 LangChain Tool Calling
   rag_quality_cases.json # 固定 RAG 质量问题集

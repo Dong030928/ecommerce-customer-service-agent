@@ -23,7 +23,7 @@ def create_router(agent_provider: Any) -> APIRouter:
         index = get_knowledge_index()
         return {
             "status": "ok",
-            "version": "0.18.0",
+            "version": "0.19.0",
             "rag_index_version": index.version,
             "rag_index_chunks": index.chunk_count,
         }

@@ -172,7 +172,7 @@ class HookGovernanceTests(unittest.TestCase):
         )
         self.assertEqual(response.hook_completion.hook_count, 1)
         self.assertEqual(response.hook_completion.tool_count, 0)
-        self.assertEqual(response.session_state["agent_version"], "0.18.0")
+        self.assertEqual(response.session_state["agent_version"], "0.19.0")
         self.assertFalse(response.session_state["hooks"]["full_trace_available"])
 
     def test_high_risk_route_records_degradation_but_not_hitl_approval(self) -> None:

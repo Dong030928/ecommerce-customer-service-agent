@@ -25,6 +25,7 @@ def build_langchain_tools(
     request: ChatRequest,
     runtime: ToolRuntime,
     hooks: HookManager | None = None,
+    allowed_tool_names: list[str] | None = None,
 ) -> list[Any]:
     """Import LangChain only on the realtime route and keep execution controlled."""
 
@@ -69,6 +70,7 @@ def build_langchain_tools(
         "get_refund_status": get_refund_status,
         "search_current_user_orders": search_current_user_orders,
     }
+    allowed = set(allowed_tool_names) if allowed_tool_names is not None else None
     return [
         StructuredTool.from_function(
             func=functions[name],
@@ -76,4 +78,5 @@ def build_langchain_tools(
             description=spec.description,
         )
         for name, spec in TOOL_SPECS.items()
+        if allowed is None or name in allowed
     ]

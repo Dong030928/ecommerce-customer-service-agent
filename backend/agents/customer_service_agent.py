@@ -14,6 +14,8 @@ from api.schemas import (
     Intent,
     IntentResult,
     KnowledgeHit,
+    PlannerTrace,
+    RoutePlan,
 )
 from config.settings import (
     CANDIDATE_K,
@@ -27,7 +29,6 @@ from degradation.fallbacks import (
     degradation_from_tool_records,
     fallback_message,
     high_risk_degradation,
-    is_high_risk_write_request,
 )
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from hooks.manager import HookManager
@@ -35,6 +36,8 @@ from mcp_catalog.catalog import MCP_CATALOG
 from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
+from models.task_planner_client import TaskPlannerModelClient
+from planner.task_planner import TaskPlanner
 from rag.knowledge_base import load_knowledge_chunks
 from rag.prompting import (
     build_citations,
@@ -57,7 +60,6 @@ from tools.planning import (
     is_product_tool_rag_query,
     post_tool_clarification,
     pre_tool_clarification,
-    should_route_to_realtime_tool,
 )
 from tools.runtime_context import public_runtime_context
 from tools.tool_calling import ToolCallingOutcome, ToolCallingService
@@ -399,6 +401,7 @@ class CustomerServiceAgent:
         clarification_api_key: str | None = None,
         clarification_base_url: str | None = None,
         clarification_model_name: str | None = None,
+        task_planner: TaskPlanner | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
@@ -418,11 +421,40 @@ class CustomerServiceAgent:
         self._clarification_api_key = clarification_api_key
         self._clarification_base_url = clarification_base_url
         self._clarification_model_name = clarification_model_name
+        self._task_planner = task_planner or TaskPlanner(
+            TaskPlannerModelClient(
+                http_client=classifier_http_client,
+                api_key=classifier_api_key,
+                base_url=classifier_base_url,
+                model=classifier_model_name,
+            )
+        )
+
+    @staticmethod
+    def _intent_result_from_route_plan(
+        route_plan: RoutePlan,
+        planner_trace: PlannerTrace,
+        rule_result: IntentResult | None,
+    ) -> IntentResult:
+        same_rule_intent = (
+            rule_result is not None and rule_result.intent == route_plan.intent
+        )
+        return IntentResult(
+            intent=route_plan.intent,
+            source=route_plan.source,
+            confidence=route_plan.confidence,
+            matched_keywords=(
+                list(rule_result.matched_keywords) if same_rule_intent else []
+            ),
+            explanation=planner_trace.public_reason,
+        )
 
     def _finalize_with_hooks(
         self,
         response: ChatResponse,
         hooks: HookManager,
+        route_plan: RoutePlan,
+        planner_trace: PlannerTrace,
     ) -> ChatResponse:
         """Attach one bounded lifecycle summary to every public response path."""
 
@@ -448,7 +480,9 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.18.0"
+        state["agent_version"] = "0.19.0"
+        state["route_plan"] = route_plan.model_dump()
+        state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
         state["hooks"] = {
             "events": [event.model_dump() for event in hooks.events],
@@ -457,14 +491,19 @@ class CustomerServiceAgent:
             "hitl_approval_performed": False,
         }
         state["next_gap"] = (
-            "工具、Resource 和 Prompt 已由本地 MCP-style 目录统一提供；"
-            "下一步为退款等高风险写操作接入可恢复 Workflow 与真实 HITL。"
+            "入口已由 TaskPlanner 统一生成可校验 RoutePlan；下一步细化高风险"
+            "Action 边界，再接入可恢复 Workflow 与真实 HITL。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
             [
                 "工具契约来自本地 MCP-style Catalog，并携带 Resource 与 Prompt 绑定。",
                 "MCP-style 目录只改变能力来源；Tool Use 仍负责执行，Hooks 仍负责治理。",
+                (
+                    f"TaskPlanner 选择 {route_plan.execution_route} 路由，"
+                    f"required_tools={route_plan.required_tools}。"
+                ),
+                planner_trace.public_reason,
             ]
         )
         return response.model_copy(
@@ -472,6 +511,8 @@ class CustomerServiceAgent:
                 "hook_events": list(hooks.events),
                 "hook_completion": completion,
                 "mcp_context": mcp_context,
+                "route_plan": route_plan,
+                "planner_trace": planner_trace,
                 "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
@@ -518,7 +559,7 @@ class CustomerServiceAgent:
                 "请求已标记为高风险并转入人工确认边界。",
             ],
             session_state={
-                "agent_version": "0.18.0",
+                "agent_version": "0.19.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -557,6 +598,7 @@ class CustomerServiceAgent:
         intent_result: IntentResult,
         message_count: int,
         hooks: HookManager,
+        route_plan: RoutePlan,
     ) -> ChatResponse:
         """Run realtime reads without sending trusted identity to the planning model."""
 
@@ -600,6 +642,7 @@ class CustomerServiceAgent:
                 intent_result.intent,
                 clarification_plan,
                 hooks=hooks,
+                allowed_tool_names=route_plan.required_tools,
             )
             clarification = post_tool_clarification(outcome.tool_calls)
             if clarification is not None:
@@ -673,7 +716,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.18.0",
+                "agent_version": "0.19.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -729,6 +772,7 @@ class CustomerServiceAgent:
         intent_result: IntentResult,
         message_count: int,
         hooks: HookManager,
+        route_plan: RoutePlan,
     ) -> ChatResponse:
         """Combine current product facts with stable, cited product knowledge."""
 
@@ -737,6 +781,7 @@ class CustomerServiceAgent:
             intent_result,
             message_count,
             hooks,
+            route_plan,
         )
         successful_observations = [
             record.observation
@@ -858,7 +903,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.18.0"
+        state["agent_version"] = "0.19.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -950,43 +995,48 @@ class CustomerServiceAgent:
         )
         message_count = self._message_count_by_session[request.session_id]
         hooks = HookManager()
-        intent_result = classify_intent(
-            request.user_message,
-            http_client=self._classifier_http_client,
-            api_key=self._classifier_api_key,
-            base_url=self._classifier_base_url,
-            model=self._classifier_model_name,
+        rule_result = plan_intent_by_rules(request.user_message)
+        route_plan, planner_trace = self._task_planner.plan(
+            request,
+            rule_result,
         )
-        if is_high_risk_write_request(request.user_message):
+        intent_result = self._intent_result_from_route_plan(
+            route_plan,
+            planner_trace,
+            rule_result,
+        )
+        if route_plan.requires_workflow:
             return self._finalize_with_hooks(
                 self._high_risk_response(request, intent_result, message_count),
                 hooks,
+                route_plan,
+                planner_trace,
             )
-        if is_product_tool_rag_query(
-            intent_result.intent,
-            request.user_message,
-        ):
+        if route_plan.execution_route == "tool_rag":
             return self._finalize_with_hooks(
                 self._chat_with_product_tool_rag(
                     request,
                     intent_result,
                     message_count,
                     hooks,
+                    route_plan,
                 ),
                 hooks,
+                route_plan,
+                planner_trace,
             )
-        if should_route_to_realtime_tool(
-            intent_result.intent,
-            request.user_message,
-        ):
+        if route_plan.execution_route == "tool":
             return self._finalize_with_hooks(
                 self._chat_with_tools(
                     request,
                     intent_result,
                     message_count,
                     hooks,
+                    route_plan,
                 ),
                 hooks,
+                route_plan,
+                planner_trace,
             )
 
         rewrite = rewrite_retrieval_query(
@@ -1017,7 +1067,7 @@ class CustomerServiceAgent:
         answer_path = "general_chat"
         low_confidence = False
         realtime_gap = False
-        if intent_result.intent != "general_chat":
+        if route_plan.needs_rag:
             try:
                 retrieval_outcome = retrieve_hybrid_candidates(
                     rewrite,
@@ -1070,7 +1120,7 @@ class CustomerServiceAgent:
             rewrite,
             reliable_hits,
         )
-        if intent_result.intent == "general_chat":
+        if not route_plan.needs_rag:
             fallback_answer = build_answer(intent_result)
         elif realtime_gap:
             fallback_answer = build_realtime_business_gap_answer()
@@ -1121,7 +1171,7 @@ class CustomerServiceAgent:
             else load_knowledge_chunks()
         )
         top_score = reranked_hits[0].score if reranked_hits else 0.0
-        if intent_result.intent == "general_chat":
+        if not route_plan.needs_rag:
             confidence_level = "not_applicable"
             low_confidence_action = "general_chat_without_citations"
         elif retrieval_error:
@@ -1141,10 +1191,10 @@ class CustomerServiceAgent:
         quality_error: str | None = retrieval_error
         quality_status = (
             "skipped_general_chat"
-            if intent_result.intent == "general_chat"
+            if not route_plan.needs_rag
             else "skipped_retrieval_unavailable"
         )
-        if intent_result.intent != "general_chat" and retrieval_error is None:
+        if route_plan.needs_rag and retrieval_error is None:
             try:
                 quality_summary = run_rag_quality_check(
                     embedding_client=self._embedding_client
@@ -1171,7 +1221,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.18.0",
+            "agent_version": "0.19.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1287,7 +1337,7 @@ class CustomerServiceAgent:
                 citations=citations,
                 tool_calls=[],
                 next_action="answer_user",
-                risk_level="low",
+                risk_level=route_plan.risk_level,
                 needs_human_approval=False,
                 degraded=degraded,
                 cost_summary=cost_summary,
@@ -1295,4 +1345,6 @@ class CustomerServiceAgent:
                 session_state=session_state,
             ),
             hooks,
+            route_plan,
+            planner_trace,
         )

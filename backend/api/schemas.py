@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 ReasoningView = Literal["default", "off", "summary", "teaching"]
 IntentSource = Literal["rules", "classifier", "rules_fallback"]
+RouteSource = Literal["rules", "classifier", "rules_fallback"]
+ExecutionRoute = Literal["general", "rag", "tool", "tool_rag", "workflow"]
 Intent = Literal[
     "general_chat",
     "promotion_consult",
@@ -85,6 +87,49 @@ class IntentResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     matched_keywords: list[str] = Field(default_factory=list)
     explanation: str
+
+
+class RoutePlan(BaseModel):
+    """Validated entry decision, not a hidden or long-form execution plan."""
+
+    intent: Intent
+    execution_route: ExecutionRoute
+    needs_rag: bool
+    needs_business_tools: bool
+    rag_query: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    source: RouteSource
+    intents: list[str] = Field(default_factory=list)
+    entity_refs: list[str] = Field(default_factory=list)
+    required_context: list[str] = Field(default_factory=list)
+    required_tools: list[str] = Field(default_factory=list)
+    knowledge_domains: list[str] = Field(default_factory=list)
+    has_realtime_fact: bool = False
+    risk_level: RiskLevel = "low"
+    requires_workflow: bool = False
+    fallback_policy: str = "default"
+
+
+class ToolCandidate(BaseModel):
+    """Public-safe tool metadata considered for one route decision."""
+
+    name: str
+    domain: str
+    allowed_in_light_path: bool
+    risk_level: RiskLevel
+    reason: str
+
+
+class PlannerTrace(BaseModel):
+    """Bounded planner trace that excludes hidden chain-of-thought."""
+
+    source: RouteSource
+    rule_confidence: float = Field(ge=0.0, le=1.0)
+    model_consulted: bool = False
+    safety_override: bool = False
+    candidate_tools: list[ToolCandidate] = Field(default_factory=list)
+    constrained_required_tools: list[str] = Field(default_factory=list)
+    public_reason: str
 
 
 class ToolSpec(BaseModel):
@@ -438,6 +483,8 @@ class ChatResponse(BaseModel):
     answer: str
     intent: Intent
     intent_result: IntentResult
+    route_plan: RoutePlan | None = None
+    planner_trace: PlannerTrace | None = None
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     hook_events: list[HookEvent] = Field(default_factory=list)
@@ -456,6 +503,18 @@ class ChatResponse(BaseModel):
 ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": ReasoningView})
 IntentResult.model_rebuild(
     _types_namespace={"Intent": Intent, "IntentSource": IntentSource}
+)
+RoutePlan.model_rebuild(
+    _types_namespace={
+        "ExecutionRoute": ExecutionRoute,
+        "Intent": Intent,
+        "RiskLevel": RiskLevel,
+        "RouteSource": RouteSource,
+    }
+)
+ToolCandidate.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
+PlannerTrace.model_rebuild(
+    _types_namespace={"RouteSource": RouteSource, "ToolCandidate": ToolCandidate}
 )
 ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
 MCPToolDefinition.model_rebuild(
@@ -530,7 +589,9 @@ ChatResponse.model_rebuild(
         "HookEvent": HookEvent,
         "MCPBindingSummary": MCPBindingSummary,
         "NextAction": NextAction,
+        "PlannerTrace": PlannerTrace,
         "RiskLevel": RiskLevel,
+        "RoutePlan": RoutePlan,
         "ClarificationRequest": ClarificationRequest,
         "ToolCallRecord": ToolCallRecord,
     }

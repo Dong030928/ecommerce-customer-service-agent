@@ -134,8 +134,16 @@ class ToolCallingService:
         intent: Intent,
         clarification_plan: ClarificationPlan | None = None,
         hooks: HookManager | None = None,
+        allowed_tool_names: list[str] | None = None,
     ) -> ToolCallingOutcome:
-        available_tools = [spec.model_dump() for spec in TOOL_SPECS.values()]
+        allowed = (
+            set(allowed_tool_names) if allowed_tool_names is not None else None
+        )
+        available_tools = [
+            spec.model_dump()
+            for name, spec in TOOL_SPECS.items()
+            if allowed is None or name in allowed
+        ]
         plan_hint = (
             clarification_plan.model_dump_json()
             if clarification_plan is not None
@@ -145,7 +153,12 @@ class ToolCallingService:
             from langchain.agents import create_agent
 
             model = self._model_factory()
-            tools = build_langchain_tools(request, self._runtime, hooks)
+            tools = build_langchain_tools(
+                request,
+                self._runtime,
+                hooks,
+                allowed_tool_names,
+            )
             agent = create_agent(
                 model=model,
                 tools=tools,

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.0
+
+- 新增 `TaskPlanner`，在 RAG、Tool、Tool + RAG 和高风险受控路径之前生成统一 `RoutePlan`；
+- 新增 `RoutePlan`、`ToolCandidate` 与公开安全 `PlannerTrace` 契约，顶层响应和会话状态同步返回；
+- 高置信规则直接规划，低置信场景通过 OpenAI-compatible 轻量模型生成结构化路线草案；
+- 规划模型只接收用户消息和公开工具候选，不接收 Runtime 身份值、业务事实或原始 ToolResult；
+- 对模型输出的 intent、工具名、知识域、实体引用、上下文要求、风险和 fallback 策略执行允许列表约束；
+- `RoutePlan.required_tools` 直接限制 LangChain Agent 本轮可见的工具集合，未知工具不会进入执行面；
+- 高风险退款、取消和赔付请求由确定性安全规则最终覆盖为 Workflow 路由，不执行普通工具或写操作；
+- 保留 MCP-style Catalog、Hooks、Hybrid RAG、商品 Tool + RAG、结构化澄清和安全降级能力；
+- FastAPI 应用与健康检查版本同步升级到 `0.19.0`；
+- 新增四类轻路径、低置信模型规划、候选约束、高风险覆盖和工具可见范围回归测试。
+
 ## 0.18.0
 
 - 新增本地 `MCPCatalog`，统一组织五个只读工具定义、边界 Resource 和 Observation Prompt；

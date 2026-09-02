@@ -34,8 +34,9 @@ class SuccessfulToolService:
         intent: str,
         clarification_plan: object | None = None,
         hooks: object | None = None,
+        allowed_tool_names: list[str] | None = None,
     ) -> ToolCallingOutcome:
-        del request, intent, clarification_plan, hooks
+        del request, intent, clarification_plan, hooks, allowed_tool_names
         record = ToolCallRecord(
             action=ToolAction(
                 tool_name="get_order_status",

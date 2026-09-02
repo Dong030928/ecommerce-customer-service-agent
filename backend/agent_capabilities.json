@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.18.0-mcp-tool-use",
-    "title": "MCP-style Catalog And Tool Use",
-    "summary": "当前版本由本地 MCP-style Catalog 统一提供工具、Resource 和 Prompt 绑定，再交给现有 Tool Use 与 Hooks 链路执行和治理。"
+    "id": "v0.19.0-task-planner-route-plan",
+    "title": "TaskPlanner And RoutePlan",
+    "summary": "当前版本先生成经过安全规则和允许列表约束的 RoutePlan，再进入 RAG、Tool、Tool + RAG 或高风险受控路径。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.18.0"
+    "version": "0.19.0"
   },
   "endpoints": {
     "health": true,
@@ -24,6 +24,13 @@
     "real_llm_answer": true,
     "grounded_model_answer": true,
     "structured_intent": true,
+    "route_planner": true,
+    "route_plan": true,
+    "planner_trace": true,
+    "tool_candidates": true,
+    "tool_candidate_constraint": true,
+    "low_confidence_model_planning": true,
+    "workflow_route_signal": true,
     "prompt_boundary": true,
     "prompt_registry": false,
     "full_prompt_context": false,
@@ -92,7 +99,7 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "workflow": "售后工作流还没有接入。",
+    "workflow": "当前只返回 requires_workflow 路由信号，不执行可恢复工作流。",
     "human_approval": "当前只返回 needs_human_approval 和 transfer_to_human 边界，真实 HITL 审批流程还没有接入。",
     "memory": "多轮记忆还没有接入。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
