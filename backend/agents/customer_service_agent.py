@@ -9,6 +9,7 @@ import httpx
 from api.schemas import (
     ChatRequest,
     ChatResponse,
+    Citation,
     ClarificationRequest,
     DegradationState,
     Intent,
@@ -38,6 +39,11 @@ from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from models.task_planner_client import TaskPlannerModelClient
 from planner.task_planner import TaskPlanner
+from policies.after_sale_policy import (
+    AfterSalePolicyService,
+    clarification_assessment,
+    detect_high_risk_action,
+)
 from rag.knowledge_base import load_knowledge_chunks
 from rag.prompting import (
     build_citations,
@@ -402,6 +408,7 @@ class CustomerServiceAgent:
         clarification_base_url: str | None = None,
         clarification_model_name: str | None = None,
         task_planner: TaskPlanner | None = None,
+        after_sale_policy_service: AfterSalePolicyService | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
@@ -428,6 +435,9 @@ class CustomerServiceAgent:
                 base_url=classifier_base_url,
                 model=classifier_model_name,
             )
+        )
+        self._after_sale_policy_service = (
+            after_sale_policy_service or AfterSalePolicyService()
         )
 
     @staticmethod
@@ -480,7 +490,7 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.19.0"
+        state["agent_version"] = "0.20.0"
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -491,8 +501,8 @@ class CustomerServiceAgent:
             "hitl_approval_performed": False,
         }
         state["next_gap"] = (
-            "入口已由 TaskPlanner 统一生成可校验 RoutePlan；下一步细化高风险"
-            "Action 边界，再接入可恢复 Workflow 与真实 HITL。"
+            "高风险售后已支持只读证据核验与资格评估；下一步接入可恢复 "
+            "Workflow 与真实 HITL。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -518,26 +528,147 @@ class CustomerServiceAgent:
             }
         )
 
+    def _retrieve_after_sale_policy(
+        self,
+        request: ChatRequest,
+        intent_result: IntentResult,
+    ) -> tuple[list[Citation], dict]:
+        """Retrieve policy evidence without mixing per-user facts into the index."""
+
+        rewrite = rewrite_retrieval_query(request.user_message, intent_result.intent)
+        try:
+            retrieval = retrieve_hybrid_candidates(
+                rewrite,
+                intent_result.intent,
+                embedding_client=self._embedding_client,
+            )
+            reranked = rerank_candidates(
+                rewrite.rewritten_query,
+                retrieval.candidates,
+                config=self._rerank_config,
+                http_client=self._rerank_http_client,
+            )
+            reliable_hits = (
+                []
+                if is_low_confidence(reranked.hits)
+                else reranked.hits[:FINAL_TOP_K]
+            )
+            citations = build_citations(reliable_hits)
+            return citations, {
+                "status": "completed" if citations else "low_confidence",
+                "mode": "hybrid_rag_policy_evidence",
+                "vector_search": True,
+                "keyword_search": True,
+                "scene": retrieval.plan.scene,
+                "index_version": retrieval.index.version,
+                "candidate_count": len(retrieval.candidates),
+                "citation_count": len(citations),
+                "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
+                "rerank_mode": reranked.mode,
+                "retrieval_error": None,
+            }
+        except (
+            RuntimeError,
+            httpx.HTTPError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            return [], {
+                "status": "unavailable",
+                "mode": "hybrid_rag_policy_evidence",
+                "vector_search": True,
+                "keyword_search": True,
+                "scene": "after_sale",
+                "citation_count": 0,
+                "retrieval_error": exc.__class__.__name__,
+            }
+
     def _high_risk_response(
         self,
         request: ChatRequest,
         intent_result: IntentResult,
         message_count: int,
+        hooks: HookManager,
     ) -> ChatResponse:
-        """Block writes before RAG or tool planning and request human review."""
+        """Assess eligibility with read-only evidence while blocking every write."""
+
+        action_type = detect_high_risk_action(request.user_message)
+        order_id = extract_order_id(request.user_message)
+        citations: list[Citation] = []
+        tool_calls = []
+        policy_state: dict = {
+            "status": "skipped_missing_order",
+            "mode": "hybrid_rag_policy_evidence",
+            "citation_count": 0,
+        }
+        if order_id:
+            citations, policy_state = self._retrieve_after_sale_policy(
+                request,
+                intent_result,
+            )
+            boundary = self._after_sale_policy_service.assess(
+                request=request,
+                order_id=order_id,
+                action_type=action_type,
+                policy_basis=citations,
+                hooks=hooks,
+            )
+            assessment = boundary.assessment
+            tool_calls = boundary.tool_calls
+            next_action = "transfer_to_human"
+        else:
+            assessment = clarification_assessment(action_type)
+            next_action = "ask_clarification"
+
+        action_label = {
+            "refund": "退款",
+            "return": "退货",
+            "cancel": "取消订单",
+            "compensation": "补偿",
+            "unknown": "售后",
+        }[action_type]
+        if assessment.eligibility_status == "eligible_for_application":
+            answer = (
+                f"订单 {order_id} 当前只判断为可发起{action_label}申请。"
+                "我不会直接执行退款、退货、取消或补偿，后续必须进入受控流程并由人工确认。"
+            )
+        elif assessment.eligibility_status == "needs_clarification":
+            answer = (
+                "请先提供要处理的订单号。我可以核验售后申请资格，"
+                "但不会直接退款、退货、取消订单或补偿。"
+            )
+        else:
+            answer = (
+                f"订单 {order_id} 当前不能直接执行该售后动作。"
+                f"{assessment.reasons[0]}我只能提供资格判断并建议人工复核。"
+            )
+        if citations:
+            answer += " 政策依据见 [C1]。"
 
         degradation = high_risk_degradation()
-        answer = fallback_message(degradation.error_category)
-        messages = [
-            {"role": "system", "content": "高风险写操作必须人工复核。"},
-            {"role": "user", "content": request.user_message},
+        evidence_messages = [
+            {
+                "role": "system",
+                "content": "高风险写操作被阻断；以下内容仅用于公开成本估算。",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"action={action_type}; order={order_id or 'missing'}; "
+                    f"eligibility={assessment.eligibility_status}; "
+                    f"citations={[item.citation_id for item in citations]}"
+                ),
+            },
         ]
-        cost_summary = build_cost_summary(messages, answer, None)
+        cost_summary = build_cost_summary(evidence_messages, answer, None)
         event = {
             "message_count": message_count,
             "intent": intent_result.intent,
             "risk_level": "high",
-            "next_action": "transfer_to_human",
+            "eligibility_status": assessment.eligibility_status,
+            "next_action": next_action,
             "cost_summary": cost_summary.model_dump(),
         }
         self._cost_events_by_session.setdefault(request.session_id, []).append(event)
@@ -546,20 +677,21 @@ class CustomerServiceAgent:
             answer=answer,
             intent=intent_result.intent,
             intent_result=intent_result,
-            citations=[],
-            tool_calls=[],
-            next_action="transfer_to_human",
+            citations=citations,
+            tool_calls=tool_calls,
+            after_sale_assessment=assessment,
+            next_action=next_action,
             risk_level="high",
             needs_human_approval=True,
             degraded=True,
             cost_summary=cost_summary,
             reasoning_summary=[
-                "后端在 RAG 和 Tool Calling 之前识别到退款、取消或赔付写请求。",
-                "当前版本只开放只读工具，未执行任何写操作。",
-                "请求已标记为高风险并转入人工确认边界。",
+                "高风险售后只能读取事实并判断申请资格，不能执行任何业务写动作。",
+                "资格判断同时检查当前用户订单、物流状态和真实 RAG 售后政策依据。",
+                "当前仍未创建 Workflow、审批单或退款记录，最终动作必须由人工确认。",
             ],
             session_state={
-                "agent_version": "0.19.0",
+                "agent_version": "0.20.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -575,20 +707,23 @@ class CustomerServiceAgent:
                     "needs_human_approval": True,
                     "write_executed": False,
                     "workflow_started": False,
+                    "assessment": assessment.model_dump(),
+                    "read_only_evidence_collected": bool(tool_calls),
                 },
                 "tool_calling": {
                     "create_agent": False,
+                    "execution_mode": "deterministic_read_only_boundary",
                     "skip_reason": "high_risk_write_blocked",
-                    "tool_call_count": 0,
+                    "tool_call_count": len(tool_calls),
                     "raw_tool_result_exposed": False,
                 },
-                "rag": {"status": "skipped_high_risk_write", "realtime_gap": False},
-                "rag_quality": {"status": "skipped_high_risk_write"},
+                "rag": policy_state,
+                "rag_quality": {"status": "skipped_high_risk_boundary"},
                 "cost_log": {
                     "event_count": len(self._cost_events_by_session[request.session_id]),
                     "latest": event,
                 },
-                "next_gap": "已建立高风险写操作边界；下一步接入可恢复的 Workflow 与真实 HITL 审批。",
+                "next_gap": "已能判断高风险售后申请资格；下一步接入可恢复 Workflow 与真实 HITL 审批。",
             },
         )
 
@@ -716,7 +851,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.19.0",
+                "agent_version": "0.20.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -903,7 +1038,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.19.0"
+        state["agent_version"] = "0.20.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1007,7 +1142,12 @@ class CustomerServiceAgent:
         )
         if route_plan.requires_workflow:
             return self._finalize_with_hooks(
-                self._high_risk_response(request, intent_result, message_count),
+                self._high_risk_response(
+                    request,
+                    intent_result,
+                    message_count,
+                    hooks,
+                ),
                 hooks,
                 route_plan,
                 planner_trace,
@@ -1221,7 +1361,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.19.0",
+            "agent_version": "0.20.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

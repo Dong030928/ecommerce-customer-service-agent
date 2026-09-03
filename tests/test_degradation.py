@@ -161,7 +161,7 @@ class DegradationTests(unittest.TestCase):
         self.assertEqual(observation.error_category, "not_found")
         self.assertEqual(observation.attempts, 1)
 
-    def test_high_risk_write_is_blocked_before_tools_and_rag(self) -> None:
+    def test_high_risk_write_only_allows_read_only_evidence_collection(self) -> None:
         response = CustomerServiceAgent().chat(
             request(f"请马上帮我取消订单 {ORDER_ID} 并退款")
         )
@@ -170,8 +170,22 @@ class DegradationTests(unittest.TestCase):
         self.assertEqual(response.risk_level, "high")
         self.assertTrue(response.needs_human_approval)
         self.assertEqual(response.next_action, "transfer_to_human")
-        self.assertEqual(response.tool_calls, [])
+        self.assertEqual(
+            [record.action.tool_name for record in response.tool_calls],
+            ["get_order_status", "get_order_logistics"],
+        )
+        self.assertTrue(
+            all(
+                record.action.tool_name
+                not in response.after_sale_assessment.blocked_write_actions
+                for record in response.tool_calls
+            )
+        )
         self.assertEqual(response.citations, [])
+        self.assertEqual(
+            response.after_sale_assessment.eligibility_status,
+            "blocked",
+        )
         self.assertFalse(response.session_state["risk_boundary"]["write_executed"])
         self.assertEqual(
             response.session_state["degradation"]["error_category"],

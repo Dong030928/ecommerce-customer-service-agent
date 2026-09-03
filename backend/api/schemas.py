@@ -29,6 +29,13 @@ NextAction = Literal[
     "transfer_to_human",
 ]
 RiskLevel = Literal["low", "medium", "high"]
+HighRiskActionType = Literal[
+    "refund",
+    "return",
+    "cancel",
+    "compensation",
+    "unknown",
+]
 ErrorCategory = Literal[
     "none",
     "timeout",
@@ -130,6 +137,26 @@ class PlannerTrace(BaseModel):
     candidate_tools: list[ToolCandidate] = Field(default_factory=list)
     constrained_required_tools: list[str] = Field(default_factory=list)
     public_reason: str
+
+
+class HighRiskAssessment(BaseModel):
+    """Evidence-based eligibility result that never represents a write execution."""
+
+    action_type: HighRiskActionType
+    order_id: str | None = None
+    eligibility_status: Literal[
+        "eligible_for_application",
+        "not_eligible",
+        "needs_clarification",
+        "manual_review_required",
+        "blocked",
+    ]
+    risk_level: Literal["high"] = "high"
+    needs_human_approval: bool = True
+    evidence_checklist: list[str] = Field(default_factory=list)
+    policy_basis: list["Citation"] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    blocked_write_actions: list[str] = Field(default_factory=list)
 
 
 class ToolSpec(BaseModel):
@@ -485,6 +512,7 @@ class ChatResponse(BaseModel):
     intent_result: IntentResult
     route_plan: RoutePlan | None = None
     planner_trace: PlannerTrace | None = None
+    after_sale_assessment: HighRiskAssessment | None = None
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     hook_events: list[HookEvent] = Field(default_factory=list)
@@ -515,6 +543,13 @@ RoutePlan.model_rebuild(
 ToolCandidate.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
 PlannerTrace.model_rebuild(
     _types_namespace={"RouteSource": RouteSource, "ToolCandidate": ToolCandidate}
+)
+HighRiskAssessment.model_rebuild(
+    _types_namespace={
+        "Citation": Citation,
+        "HighRiskActionType": HighRiskActionType,
+        "Literal": Literal,
+    }
 )
 ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
 MCPToolDefinition.model_rebuild(
@@ -587,6 +622,7 @@ ChatResponse.model_rebuild(
         "IntentResult": IntentResult,
         "HookCompletion": HookCompletion,
         "HookEvent": HookEvent,
+        "HighRiskAssessment": HighRiskAssessment,
         "MCPBindingSummary": MCPBindingSummary,
         "NextAction": NextAction,
         "PlannerTrace": PlannerTrace,

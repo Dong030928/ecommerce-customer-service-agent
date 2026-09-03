@@ -234,7 +234,7 @@ class TaskPlannerTests(unittest.TestCase):
             response.session_state["route_plan"],
             response.route_plan.model_dump(),
         )
-        self.assertEqual(response.session_state["agent_version"], "0.19.0")
+        self.assertEqual(response.session_state["agent_version"], "0.20.0")
 
     def test_agent_workflow_signal_does_not_claim_workflow_execution(self) -> None:
         response = CustomerServiceAgent().chat(
@@ -244,7 +244,11 @@ class TaskPlannerTests(unittest.TestCase):
         self.assertEqual(response.route_plan.execution_route, "workflow")
         self.assertTrue(response.route_plan.requires_workflow)
         self.assertEqual(response.tool_calls, [])
-        self.assertEqual(response.next_action, "transfer_to_human")
+        self.assertEqual(response.next_action, "ask_clarification")
+        self.assertEqual(
+            response.after_sale_assessment.eligibility_status,
+            "needs_clarification",
+        )
         self.assertFalse(
             response.session_state["risk_boundary"]["workflow_started"]
         )

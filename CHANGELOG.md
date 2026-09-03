@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.0
+
+- 新增高风险售后 Action Boundary，在 `RoutePlan.requires_workflow` 路径中区分退款、退货、取消和补偿动作；
+- 新增结构化 `HighRiskAssessment`，公开申请资格、证据清单、政策依据、风险原因和被禁止的写动作；
+- 有明确订单号时确定性执行订单状态与物流状态只读查询，不让模型选择或扩展高风险工具；
+- 使用真实 Hybrid RAG 检索售后政策，只有可靠知识命中才生成 `policy_basis` citations；
+- 缺少订单号时返回结构化澄清，业务或政策证据不完整时保持阻断，不猜测资格；
+- 高风险 MCP 摘要可以展示实际使用的只读证据工具，同时继续绑定高风险 Resource 与转人工 Prompt；
+- 所有退款、批准退款、取消订单和创建补偿写动作继续被禁止，`workflow_started=false` 且不宣称已完成 HITL；
+- 保留 TaskPlanner、MCP-style Catalog、Hooks、Hybrid RAG、Tool + RAG、结构化澄清和安全降级能力；
+- FastAPI 应用与健康检查版本同步升级到 `0.20.0`。
+
 ## 0.19.0
 
 - 新增 `TaskPlanner`，在 RAG、Tool、Tool + RAG 和高风险受控路径之前生成统一 `RoutePlan`；

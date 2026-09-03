@@ -188,18 +188,6 @@ class MCPCatalog:
         """Summarize bindings actually selected by Tool Use for this request."""
 
         available = sorted(self._tools)
-        if risk_level == "high":
-            return MCPBindingSummary(
-                selected_tools=[],
-                available_tools=available,
-                resources=["resource://ecommerce/high-risk-boundary"],
-                prompts=["prompt://ecommerce/handoff-boundary"],
-                boundary=(
-                    "本地 MCP-style 目录提供高风险资源和转人工口径，"
-                    "但不执行写操作，也不替代 Workflow/HITL。"
-                ),
-            )
-
         selected = sorted(
             {
                 action.tool_name
@@ -207,6 +195,37 @@ class MCPCatalog:
                 if action.tool_name in self._tools
             }
         )
+        if risk_level == "high":
+            resources = sorted(
+                {
+                    "resource://ecommerce/high-risk-boundary",
+                    *(
+                        uri
+                        for name in selected
+                        for uri in self._tools[name].resource_uris
+                    ),
+                }
+            )
+            return MCPBindingSummary(
+                selected_tool=selected[0] if selected else None,
+                selected_tools=selected,
+                available_tools=available,
+                resources=resources,
+                prompts=sorted(
+                    {
+                        "prompt://ecommerce/handoff-boundary",
+                        *(
+                            prompt_id
+                            for name in selected
+                            for prompt_id in self._tools[name].prompt_ids
+                        ),
+                    }
+                ),
+                boundary=(
+                    "本地 MCP-style 目录只允许为高风险资格评估读取证据，"
+                    "不执行写操作，也不替代 Workflow/HITL。"
+                ),
+            )
         resources = sorted(
             {
                 uri
