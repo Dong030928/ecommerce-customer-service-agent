@@ -89,6 +89,26 @@ class AfterSalePolicyService:
             attempts=observation.attempts,
         )
 
+    def read_order(
+        self,
+        order_id: str,
+        request: ChatRequest,
+        hooks: HookManager,
+    ) -> ToolCallRecord:
+        """Expose the fixed workflow order-read node without exposing runtime internals."""
+
+        return self._read("get_order_status", order_id, request, hooks)
+
+    def read_logistics(
+        self,
+        order_id: str,
+        request: ChatRequest,
+        hooks: HookManager,
+    ) -> ToolCallRecord:
+        """Expose the fixed workflow logistics-read node."""
+
+        return self._read("get_order_logistics", order_id, request, hooks)
+
     def assess(
         self,
         *,
@@ -100,9 +120,35 @@ class AfterSalePolicyService:
     ) -> AfterSaleBoundaryResult:
         """Assess application eligibility from safe observations and RAG evidence."""
 
-        order_call = self._read("get_order_status", order_id, request, hooks)
-        logistics_call = self._read("get_order_logistics", order_id, request, hooks)
+        order_call = self.read_order(order_id, request, hooks)
+        logistics_call = self.read_logistics(order_id, request, hooks)
         tool_calls = [order_call, logistics_call]
+        assessment = self.assess_from_evidence(
+            order_id=order_id,
+            action_type=action_type,
+            policy_basis=policy_basis,
+            order_call=order_call,
+            logistics_call=logistics_call,
+        )
+        return AfterSaleBoundaryResult(
+            assessment=assessment,
+            tool_calls=tool_calls,
+        )
+
+    def assess_from_evidence(
+        self,
+        *,
+        order_id: str,
+        action_type: HighRiskActionType,
+        policy_basis: list[Citation],
+        order_call: ToolCallRecord | None,
+        logistics_call: ToolCallRecord | None,
+    ) -> HighRiskAssessment:
+        """Evaluate evidence collected by explicit workflow nodes."""
+
+        tool_calls = [
+            record for record in [order_call, logistics_call] if record is not None
+        ]
         failed = [
             record.observation
             for record in tool_calls
@@ -111,18 +157,15 @@ class AfterSalePolicyService:
         evidence = ["订单状态", "支付状态", "物流状态"]
         if policy_basis:
             evidence.append("售后政策引用")
-        if failed:
-            return AfterSaleBoundaryResult(
-                assessment=HighRiskAssessment(
-                    action_type=action_type,
-                    order_id=order_id,
-                    eligibility_status="blocked",
-                    evidence_checklist=evidence,
-                    policy_basis=policy_basis,
-                    reasons=["未取得完整可信的订单或物流事实，不能判断售后资格。"],
-                    blocked_write_actions=BLOCKED_WRITE_ACTIONS,
-                ),
-                tool_calls=tool_calls,
+        if failed or order_call is None or logistics_call is None:
+            return HighRiskAssessment(
+                action_type=action_type,
+                order_id=order_id,
+                eligibility_status="blocked",
+                evidence_checklist=evidence,
+                policy_basis=policy_basis,
+                reasons=["未取得完整可信的订单或物流事实，不能判断售后资格。"],
+                blocked_write_actions=BLOCKED_WRITE_ACTIONS,
             )
 
         order_facts = order_call.observation.facts
@@ -181,15 +224,12 @@ class AfterSalePolicyService:
             status = "needs_clarification"
             reasons = ["尚未明确要申请退款、退货、取消还是补偿。"]
 
-        return AfterSaleBoundaryResult(
-            assessment=HighRiskAssessment(
-                action_type=action_type,
-                order_id=order_id,
-                eligibility_status=status,
-                evidence_checklist=evidence,
-                policy_basis=policy_basis,
-                reasons=reasons,
-                blocked_write_actions=BLOCKED_WRITE_ACTIONS,
-            ),
-            tool_calls=tool_calls,
+        return HighRiskAssessment(
+            action_type=action_type,
+            order_id=order_id,
+            eligibility_status=status,
+            evidence_checklist=evidence,
+            policy_basis=policy_basis,
+            reasons=reasons,
+            blocked_write_actions=BLOCKED_WRITE_ACTIONS,
         )

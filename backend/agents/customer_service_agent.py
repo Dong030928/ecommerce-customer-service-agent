@@ -39,11 +39,7 @@ from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from models.task_planner_client import TaskPlannerModelClient
 from planner.task_planner import TaskPlanner
-from policies.after_sale_policy import (
-    AfterSalePolicyService,
-    clarification_assessment,
-    detect_high_risk_action,
-)
+from policies.after_sale_policy import AfterSalePolicyService
 from rag.knowledge_base import load_knowledge_chunks
 from rag.prompting import (
     build_citations,
@@ -69,6 +65,7 @@ from tools.planning import (
 )
 from tools.runtime_context import public_runtime_context
 from tools.tool_calling import ToolCallingOutcome, ToolCallingService
+from workflows.after_sale_workflow import AfterSaleWorkflow
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -439,6 +436,10 @@ class CustomerServiceAgent:
         self._after_sale_policy_service = (
             after_sale_policy_service or AfterSalePolicyService()
         )
+        self._after_sale_workflow = AfterSaleWorkflow(
+            policy_service=self._after_sale_policy_service,
+            policy_retriever=self._retrieve_after_sale_policy,
+        )
 
     @staticmethod
     def _intent_result_from_route_plan(
@@ -490,7 +491,7 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.20.0"
+        state["agent_version"] = "0.21.0"
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -501,8 +502,8 @@ class CustomerServiceAgent:
             "hitl_approval_performed": False,
         }
         state["next_gap"] = (
-            "高风险售后已支持只读证据核验与资格评估；下一步接入可恢复 "
-            "Workflow 与真实 HITL。"
+            "高风险售后已进入固定 LangGraph 节点流；下一步细化未发货退款"
+            "与签收后退货流程。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -594,33 +595,25 @@ class CustomerServiceAgent:
     ) -> ChatResponse:
         """Assess eligibility with read-only evidence while blocking every write."""
 
-        action_type = detect_high_risk_action(request.user_message)
-        order_id = extract_order_id(request.user_message)
-        citations: list[Citation] = []
-        tool_calls = []
-        policy_state: dict = {
-            "status": "skipped_missing_order",
-            "mode": "hybrid_rag_policy_evidence",
-            "citation_count": 0,
-        }
-        if order_id:
-            citations, policy_state = self._retrieve_after_sale_policy(
-                request,
-                intent_result,
-            )
-            boundary = self._after_sale_policy_service.assess(
-                request=request,
-                order_id=order_id,
-                action_type=action_type,
-                policy_basis=citations,
-                hooks=hooks,
-            )
-            assessment = boundary.assessment
-            tool_calls = boundary.tool_calls
-            next_action = "transfer_to_human"
-        else:
-            assessment = clarification_assessment(action_type)
-            next_action = "ask_clarification"
+        workflow_state = self._after_sale_workflow.run(
+            request,
+            intent_result,
+            hooks,
+        )
+        assessment = workflow_state["assessment"]
+        if assessment is None:
+            raise RuntimeError("after-sale workflow completed without an assessment")
+        workflow = self._after_sale_workflow.summary(workflow_state)
+        action_type = assessment.action_type
+        order_id = assessment.order_id
+        citations = workflow_state["citations"]
+        tool_calls = workflow_state["tool_calls"]
+        policy_state = workflow_state["policy_state"]
+        next_action = (
+            "ask_clarification"
+            if assessment.eligibility_status == "needs_clarification"
+            else "transfer_to_human"
+        )
 
         action_label = {
             "refund": "退款",
@@ -680,6 +673,7 @@ class CustomerServiceAgent:
             citations=citations,
             tool_calls=tool_calls,
             after_sale_assessment=assessment,
+            workflow=workflow,
             next_action=next_action,
             risk_level="high",
             needs_human_approval=True,
@@ -688,10 +682,11 @@ class CustomerServiceAgent:
             reasoning_summary=[
                 "高风险售后只能读取事实并判断申请资格，不能执行任何业务写动作。",
                 "资格判断同时检查当前用户订单、物流状态和真实 RAG 售后政策依据。",
-                "当前仍未创建 Workflow、审批单或退款记录，最终动作必须由人工确认。",
+                "LangGraph 固定节点依次完成售后类型识别、订单校验、物流读取、政策检索和资格判断。",
+                "工作流停在提交前边界；尚未创建审批单、退款记录或可恢复 checkpoint。",
             ],
             session_state={
-                "agent_version": "0.20.0",
+                "agent_version": "0.21.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -706,7 +701,7 @@ class CustomerServiceAgent:
                     "risk_level": "high",
                     "needs_human_approval": True,
                     "write_executed": False,
-                    "workflow_started": False,
+                    "workflow_started": True,
                     "assessment": assessment.model_dump(),
                     "read_only_evidence_collected": bool(tool_calls),
                 },
@@ -719,11 +714,12 @@ class CustomerServiceAgent:
                 },
                 "rag": policy_state,
                 "rag_quality": {"status": "skipped_high_risk_boundary"},
+                "workflow": workflow.model_dump(),
                 "cost_log": {
                     "event_count": len(self._cost_events_by_session[request.session_id]),
                     "latest": event,
                 },
-                "next_gap": "已能判断高风险售后申请资格；下一步接入可恢复 Workflow 与真实 HITL 审批。",
+                "next_gap": "售后节点已由 LangGraph 固定；下一步细化未发货退款与签收后退货流程。",
             },
         )
 
@@ -851,7 +847,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.20.0",
+                "agent_version": "0.21.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1038,7 +1034,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.20.0"
+        state["agent_version"] = "0.21.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1361,7 +1357,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.20.0",
+            "agent_version": "0.21.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

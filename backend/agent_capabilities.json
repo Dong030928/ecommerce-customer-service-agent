@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.20.0-high-risk-action-boundary",
-    "title": "High-risk Action Boundary",
-    "summary": "高风险售后请求只读取可信订单、物流和 RAG 政策证据并判断申请资格，不执行退款、取消或补偿。"
+    "id": "v0.21.0-langgraph-after-sale-workflow",
+    "title": "LangGraph After-sale Workflow",
+    "summary": "高风险售后进入固定 LangGraph StateGraph，依次完成类型识别、订单校验、物流读取、政策检索和资格判断，并在写入前停止。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.20.0"
+    "version": "0.21.0"
   },
   "endpoints": {
     "health": true,
@@ -80,8 +80,15 @@
     "high_risk_read_only_evidence": true,
     "after_sale_policy_citations": true,
     "degradation": true,
-    "workflow": false,
+    "workflow": true,
+    "langgraph_workflow": true,
+    "workflow_state": true,
+    "workflow_node_history": true,
+    "stop_before_submission": true,
     "human_approval": false,
+    "chat_resume": false,
+    "checkpoint": false,
+    "idempotency": false,
     "memory": false,
     "hooks": true,
     "pre_tool_call_hook": true,
@@ -103,8 +110,10 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "workflow": "当前只完成高风险资格评估并返回 requires_workflow 路由信号，不执行可恢复工作流。",
     "human_approval": "当前只返回 needs_human_approval 和 transfer_to_human 边界，真实 HITL 审批流程还没有接入。",
+    "chat_resume": "当前工作流同步运行到提交前停止，不提供 /chat/resume。",
+    "checkpoint": "当前 StateGraph 尚未配置持久化 checkpointer。",
+    "idempotency": "当前没有售后写入节点，因此尚未实现写操作幂等键。",
     "memory": "多轮记忆还没有接入。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "trace": "Trace 公开轨迹还没有接入。",

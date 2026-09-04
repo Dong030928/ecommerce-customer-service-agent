@@ -234,9 +234,9 @@ class TaskPlannerTests(unittest.TestCase):
             response.session_state["route_plan"],
             response.route_plan.model_dump(),
         )
-        self.assertEqual(response.session_state["agent_version"], "0.20.0")
+        self.assertEqual(response.session_state["agent_version"], "0.21.0")
 
-    def test_agent_workflow_signal_does_not_claim_workflow_execution(self) -> None:
+    def test_agent_workflow_signal_enters_graph_without_claiming_write(self) -> None:
         response = CustomerServiceAgent().chat(
             self._request("请直接退款并赔付")
         )
@@ -249,9 +249,9 @@ class TaskPlannerTests(unittest.TestCase):
             response.after_sale_assessment.eligibility_status,
             "needs_clarification",
         )
-        self.assertFalse(
-            response.session_state["risk_boundary"]["workflow_started"]
-        )
+        self.assertTrue(response.session_state["risk_boundary"]["workflow_started"])
+        self.assertTrue(response.workflow.used_langgraph)
+        self.assertFalse(response.session_state["risk_boundary"]["write_executed"])
 
 
 if __name__ == "__main__":

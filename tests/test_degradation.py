@@ -172,7 +172,7 @@ class DegradationTests(unittest.TestCase):
         self.assertEqual(response.next_action, "transfer_to_human")
         self.assertEqual(
             [record.action.tool_name for record in response.tool_calls],
-            ["get_order_status", "get_order_logistics"],
+            ["get_order_status"],
         )
         self.assertTrue(
             all(
@@ -185,6 +185,14 @@ class DegradationTests(unittest.TestCase):
         self.assertEqual(
             response.after_sale_assessment.eligibility_status,
             "blocked",
+        )
+        self.assertEqual(
+            response.workflow.node_history,
+            [
+                "classify_after_sale_intent",
+                "load_order",
+                "stop_before_submission",
+            ],
         )
         self.assertFalse(response.session_state["risk_boundary"]["write_executed"])
         self.assertEqual(

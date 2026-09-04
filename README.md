@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.20.0
+## v0.21.0
 
 当前版本提供：
 
@@ -83,12 +83,15 @@
 - 规划模型只接收用户问题和公开工具候选，不接收 Runtime 用户身份或业务 payload；
 - 模型提交的工具、知识域、实体引用和上下文字段均经过允许列表收窄；
 - `RoutePlan.required_tools` 会限制 LangChain Tool Use 实际可见的工具集合；
-- 高风险写操作会被最终安全规则覆盖为 `requires_workflow=true`，但当前不宣称 Workflow 已执行；
+- 高风险写操作会被最终安全规则覆盖为 `requires_workflow=true`，并进入固定 LangGraph 工作流；
 - 顶层返回 `route_plan` 与公开安全的 `planner_trace`，不暴露隐藏推理链；
 - 高风险售后在写动作被阻断后，只执行订单状态和物流状态的确定性只读查询；
 - 结合真实 Hybrid RAG 售后政策 citation，返回结构化 `after_sale_assessment` 申请资格评估；
 - 缺少订单号时先澄清；证据不完整时明确阻断，不让模型猜测资格或业务状态；
 - `blocked_write_actions` 明确禁止退款、批准退款、取消订单和创建补偿；
+- 使用 LangGraph `StateGraph` 固定售后类型识别、订单校验、物流读取、政策检索、资格判断和提交前停止节点；
+- 顶层 `workflow` 与 `session_state.workflow` 返回工作流类型、状态、当前节点及完整节点历史；
+- 工作流停在 `stop_before_submission`，不提交申请、不执行审批，也不返回恢复令牌；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -100,9 +103,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前入口先执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 Action Boundary，只读取订单、物流和售后政策证据并判断申请资格，仍只返回 Workflow 信号，不执行写操作或审批。每条路由结束时都生成 completion Hook，并返回 Planner 与 MCP 摘要。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入公开响应。
+当前入口先执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook，并返回 Planner 与 MCP 摘要。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入公开响应。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；工具仍只支持只读查询。高风险请求中的 `requires_workflow` 只是受控路径信号，MCP、Hooks 和 Planner 都不等同于 HITL；尚未实现可恢复工作流、真实 HITL 审批、多轮澄清状态记忆或远程 MCP Server 连接。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；工具仍只支持只读查询。高风险请求已接入同步 LangGraph 工作流，但尚未实现 checkpoint、暂停/恢复、真实 HITL 审批、幂等写入、多轮澄清状态记忆或远程 MCP Server 连接。
 
 ## 项目结构
 

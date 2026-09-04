@@ -36,6 +36,14 @@ HighRiskActionType = Literal[
     "compensation",
     "unknown",
 ]
+AfterSaleWorkflowType = Literal[
+    "unshipped_refund",
+    "received_return",
+    "order_cancellation",
+    "compensation_review",
+    "unknown",
+]
+WorkflowStatus = Literal["running", "completed", "blocked"]
 ErrorCategory = Literal[
     "none",
     "timeout",
@@ -157,6 +165,19 @@ class HighRiskAssessment(BaseModel):
     policy_basis: list["Citation"] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     blocked_write_actions: list[str] = Field(default_factory=list)
+
+
+class WorkflowSummary(BaseModel):
+    """Public-safe LangGraph execution summary without resumable state."""
+
+    workflow_id: str
+    workflow_type: AfterSaleWorkflowType
+    status: WorkflowStatus
+    current_node: str
+    pending_action: str
+    node_history: list[str] = Field(default_factory=list)
+    used_langgraph: bool = True
+    boundary: str
 
 
 class ToolSpec(BaseModel):
@@ -513,6 +534,7 @@ class ChatResponse(BaseModel):
     route_plan: RoutePlan | None = None
     planner_trace: PlannerTrace | None = None
     after_sale_assessment: HighRiskAssessment | None = None
+    workflow: WorkflowSummary | None = None
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     hook_events: list[HookEvent] = Field(default_factory=list)
@@ -549,6 +571,12 @@ HighRiskAssessment.model_rebuild(
         "Citation": Citation,
         "HighRiskActionType": HighRiskActionType,
         "Literal": Literal,
+    }
+)
+WorkflowSummary.model_rebuild(
+    _types_namespace={
+        "AfterSaleWorkflowType": AfterSaleWorkflowType,
+        "WorkflowStatus": WorkflowStatus,
     }
 )
 ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
@@ -630,5 +658,6 @@ ChatResponse.model_rebuild(
         "RoutePlan": RoutePlan,
         "ClarificationRequest": ClarificationRequest,
         "ToolCallRecord": ToolCallRecord,
+        "WorkflowSummary": WorkflowSummary,
     }
 )

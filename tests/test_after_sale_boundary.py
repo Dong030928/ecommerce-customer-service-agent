@@ -128,7 +128,8 @@ class AfterSaleBoundaryTests(unittest.TestCase):
         self.assertTrue(response.after_sale_assessment.policy_basis)
         self.assertIn("create_refund", response.after_sale_assessment.blocked_write_actions)
         self.assertFalse(response.session_state["risk_boundary"]["write_executed"])
-        self.assertFalse(response.session_state["risk_boundary"]["workflow_started"])
+        self.assertTrue(response.session_state["risk_boundary"]["workflow_started"])
+        self.assertTrue(response.workflow.used_langgraph)
         self.assertEqual(response.next_action, "transfer_to_human")
         self.assertEqual(
             response.mcp_context.selected_tools,

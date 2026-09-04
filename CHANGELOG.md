@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.0
+
+- 新增 LangGraph `StateGraph` 售后工作流，将高风险路径从普通 Agent 编排中隔离；
+- 固定执行售后类型识别、订单校验、物流读取、政策检索、资格判断和提交前停止节点；
+- 新增公开 `WorkflowSummary`，返回工作流 ID、类型、状态、当前节点、待处理动作和节点历史；
+- 复用 lesson26 的确定性只读工具、真实 Hybrid RAG 政策 citations 与结构化 `HighRiskAssessment`；
+- 订单校验失败时通过条件边提前停止，缺订单号或动作类型不明时停在澄清边界；
+- 工作流最终固定停在 `stop_before_submission`，不创建申请、不执行退款、不完成人工审批；
+- 保持 `workflow_started=true` 与 `write_executed=false` 的可观察边界，尚不提供 checkpoint 或 `resume_token`；
+- 新增 LangGraph 工作流顺序、条件分支、公开摘要与隐私隔离专项回归；
+- FastAPI 应用与健康检查版本同步升级到 `0.21.0`。
+
 ## 0.20.0
 
 - 新增高风险售后 Action Boundary，在 `RoutePlan.requires_workflow` 路径中区分退款、退货、取消和补偿动作；
