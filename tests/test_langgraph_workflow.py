@@ -1,4 +1,4 @@
-"""Offline regression tests for the lesson-27 LangGraph workflow."""
+"""Offline regression tests for the evolving LangGraph after-sale workflow."""
 
 from __future__ import annotations
 
@@ -111,7 +111,10 @@ class LangGraphWorkflowTests(unittest.TestCase):
         self.assertEqual(response.workflow.status, "completed")
         self.assertEqual(response.workflow.node_history, FULL_NODE_HISTORY)
         self.assertEqual(response.workflow.current_node, "stop_before_submission")
-        self.assertEqual(response.workflow.pending_action, "explain_boundary")
+        self.assertEqual(
+            response.workflow.pending_action,
+            "prepare_refund_application",
+        )
         self.assertEqual(
             response.session_state["workflow"],
             response.workflow.model_dump(),

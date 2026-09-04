@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.21.0-langgraph-after-sale-workflow",
-    "title": "LangGraph After-sale Workflow",
-    "summary": "高风险售后进入固定 LangGraph StateGraph，依次完成类型识别、订单校验、物流读取、政策检索和资格判断，并在写入前停止。"
+    "id": "v0.22.0-refund-return-workflows",
+    "title": "Refund and Return Workflows",
+    "summary": "未发货退款与签收后退货进入独立资格分支，核验订单、物流、退货窗口、商品属性、原因与政策依据，并在写入前停止。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.21.0"
+    "version": "0.22.0"
   },
   "endpoints": {
     "health": true,
@@ -84,6 +84,11 @@
     "langgraph_workflow": true,
     "workflow_state": true,
     "workflow_node_history": true,
+    "unshipped_refund_workflow": true,
+    "received_return_workflow": true,
+    "return_window_check": true,
+    "returnable_product_check": true,
+    "return_reason_check": true,
     "stop_before_submission": true,
     "human_approval": false,
     "chat_resume": false,

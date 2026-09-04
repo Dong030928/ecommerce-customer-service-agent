@@ -491,7 +491,7 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.21.0"
+        state["agent_version"] = "0.22.0"
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -628,10 +628,8 @@ class CustomerServiceAgent:
                 "我不会直接执行退款、退货、取消或补偿，后续必须进入受控流程并由人工确认。"
             )
         elif assessment.eligibility_status == "needs_clarification":
-            answer = (
-                "请先提供要处理的订单号。我可以核验售后申请资格，"
-                "但不会直接退款、退货、取消订单或补偿。"
-            )
+            answer = assessment.reasons[0]
+            answer += " 我可以继续核验售后申请资格，但不会直接执行任何售后写操作。"
         else:
             answer = (
                 f"订单 {order_id} 当前不能直接执行该售后动作。"
@@ -686,7 +684,7 @@ class CustomerServiceAgent:
                 "工作流停在提交前边界；尚未创建审批单、退款记录或可恢复 checkpoint。",
             ],
             session_state={
-                "agent_version": "0.21.0",
+                "agent_version": "0.22.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -719,7 +717,7 @@ class CustomerServiceAgent:
                     "event_count": len(self._cost_events_by_session[request.session_id]),
                     "latest": event,
                 },
-                "next_gap": "售后节点已由 LangGraph 固定；下一步细化未发货退款与签收后退货流程。",
+                "next_gap": "退款与退货资格流已细化；下一步接入真实人工审批与可恢复工作流。",
             },
         )
 
@@ -847,7 +845,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.21.0",
+                "agent_version": "0.22.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1034,7 +1032,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.21.0"
+        state["agent_version"] = "0.22.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1357,7 +1355,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.21.0",
+            "agent_version": "0.22.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

@@ -71,6 +71,45 @@ def current_user_orders_truncated(request: ChatRequest) -> bool:
     return runtime_context(request).get("currentUserOrdersTruncated") is True
 
 
+def trusted_order_eligibility_facts(
+    request: ChatRequest,
+    order_id: str,
+) -> dict[str, Any]:
+    """Return a strict whitelist of gateway-provided facts for one exact order."""
+
+    target = order_id.strip().lower()
+    order = next(
+        (
+            item
+            for item in current_user_orders(request)
+            if _order_id(item).lower() == target
+        ),
+        None,
+    )
+    if order is None:
+        return {}
+    returnable = order.get("returnable")
+    if not isinstance(returnable, bool):
+        items = order.get("items")
+        if isinstance(items, list) and items:
+            flags = [
+                item.get("returnable")
+                for item in items
+                if isinstance(item, dict)
+            ]
+            if len(flags) == len(items) and all(isinstance(flag, bool) for flag in flags):
+                returnable = all(flags)
+            else:
+                returnable = None
+        else:
+            returnable = None
+    return {
+        "fulfillmentStatus": order.get("fulfillmentStatus"),
+        "deliveredAt": order.get("deliveredAt"),
+        "returnable": returnable,
+    }
+
+
 def contextual_order_id(request: ChatRequest) -> str | None:
     """Use a page-linked or unique trusted order, never guess among candidates."""
 

@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.21.0
+## v0.22.0
 
 当前版本提供：
 
@@ -91,6 +91,9 @@
 - `blocked_write_actions` 明确禁止退款、批准退款、取消订单和创建补偿；
 - 使用 LangGraph `StateGraph` 固定售后类型识别、订单校验、物流读取、政策检索、资格判断和提交前停止节点；
 - 顶层 `workflow` 与 `session_state.workflow` 返回工作流类型、状态、当前节点及完整节点历史；
+- 未发货退款仅在订单已支付、未出库且未发货时标记为可准备申请，并返回 `prepare_refund_application`；
+- 签收后退货独立核验签收状态、七天窗口、商品可退属性、退货原因与政策依据，并返回 `prepare_return_application`；
+- 商品可退属性可由已认证应用网关注入的精确订单上下文补齐，业务 API 已有事实保持更高优先级；
 - 工作流停在 `stop_before_submission`，不提交申请、不执行审批，也不返回恢复令牌；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；

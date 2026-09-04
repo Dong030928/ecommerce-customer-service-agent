@@ -105,11 +105,24 @@ def _order_observation(result: ToolResult) -> ToolObservation:
     order_id = order.get("orderNo")
     status = order.get("status")
     payment_status = order.get("paymentStatus")
-    allowed = {"orderNo", "status", "paymentStatus"}
+    fulfillment_status = order.get("fulfillmentStatus")
+    delivered_at = order.get("deliveredAt")
+    returnable = order.get("returnable")
+    allowed = {
+        "orderNo",
+        "status",
+        "paymentStatus",
+        "fulfillmentStatus",
+        "deliveredAt",
+        "returnable",
+    }
     facts = {
         "order_id": order_id,
         "order_status": status,
         "payment_status": payment_status,
+        "fulfillment_status": fulfillment_status,
+        "delivered_at": delivered_at,
+        "returnable": returnable if isinstance(returnable, bool) else None,
     }
     return ToolObservation(
         tool_name=result.tool_name,
@@ -143,6 +156,7 @@ def _logistics_observation(result: ToolResult) -> ToolObservation:
         "carrier": logistics.get("company"),
         "latest_event": latest_event,
         "estimated_delivery": logistics.get("estimatedDelivery"),
+        "delivered_at": logistics.get("deliveredAt") or order.get("deliveredAt"),
     }
     if logistics:
         summary = (
@@ -158,11 +172,11 @@ def _logistics_observation(result: ToolResult) -> ToolObservation:
     omitted = _omitted_paths(
         "order",
         order,
-        {"orderNo", "status"},
+        {"orderNo", "status", "deliveredAt"},
     ) + _omitted_paths(
         "logistics",
         logistics,
-        {"status", "company", "latestUpdate", "estimatedDelivery"},
+        {"status", "company", "latestUpdate", "estimatedDelivery", "deliveredAt"},
     )
     return ToolObservation(
         tool_name=result.tool_name,

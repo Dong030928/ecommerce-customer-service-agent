@@ -212,6 +212,7 @@ class AfterSaleWorkflow:
             policy_basis=state["citations"],
             order_call=order_call,
             logistics_call=logistics_call,
+            user_message=state["request"].user_message,
         )
         return self._complete(
             state,
@@ -242,23 +243,36 @@ class AfterSaleWorkflow:
                     policy_basis=state["citations"],
                     order_call=order_call,
                     logistics_call=None,
+                    user_message=state["request"].user_message,
                 )
         status: WorkflowStatus = (
             "blocked"
             if assessment.eligibility_status in {"blocked", "needs_clarification"}
             else "completed"
         )
-        answer = (
-            "售后工作流已按固定节点完成资格判断，并在业务写入前停止。"
-            "当前没有提交申请、执行退款或完成人工审批。"
+        eligible = assessment.eligibility_status == "eligible_for_application"
+        pending_actions = {
+            "unshipped_refund": "prepare_refund_application",
+            "received_return": "prepare_return_application",
+        }
+        pending_action = (
+            pending_actions.get(state["workflow_type"], "explain_boundary")
+            if eligible
+            else "explain_boundary"
         )
+        if eligible and state["workflow_type"] == "received_return":
+            answer = "签收时间、商品可退属性、退货原因和政策依据均已核验；当前只可准备退货申请，尚未提交或批准。"
+        elif eligible and state["workflow_type"] == "unshipped_refund":
+            answer = "订单已支付且未发货；当前只可准备退款申请，尚未提交、退款或完成人工审批。"
+        else:
+            answer = "售后工作流已完成资格判断，并在任何业务写入前停止。"
         return self._complete(
             state,
             "stop_before_submission",
             {
                 "assessment": assessment,
                 "status": status,
-                "pending_action": "explain_boundary",
+                "pending_action": pending_action,
                 "answer": state.get("answer") or answer,
             },
         )

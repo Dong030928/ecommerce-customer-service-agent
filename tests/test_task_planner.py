@@ -234,7 +234,7 @@ class TaskPlannerTests(unittest.TestCase):
             response.session_state["route_plan"],
             response.route_plan.model_dump(),
         )
-        self.assertEqual(response.session_state["agent_version"], "0.21.0")
+        self.assertEqual(response.session_state["agent_version"], "0.22.0")
 
     def test_agent_workflow_signal_enters_graph_without_claiming_write(self) -> None:
         response = CustomerServiceAgent().chat(

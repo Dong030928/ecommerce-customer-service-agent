@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 
 from api.schemas import (
     ChatRequest,
@@ -58,6 +59,39 @@ def clarification_assessment(action_type: HighRiskActionType) -> HighRiskAssessm
 
 def _normalized(value: object) -> str:
     return str(value or "").strip().upper()
+
+
+def _signed_days(value: object, *, today: date | None = None) -> int | None:
+    """Return whole calendar days since delivery, rejecting malformed values."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        delivered = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            delivered = date.fromisoformat(raw[:10])
+        except ValueError:
+            return None
+    return ((today or date.today()) - delivered).days
+
+
+def _has_return_reason(message: str) -> bool:
+    return any(
+        term in message
+        for term in [
+            "七天无理由",
+            "7天无理由",
+            "不想要",
+            "不合适",
+            "质量问题",
+            "破损",
+            "损坏",
+            "错发",
+            "少发",
+        ]
+    )
 
 
 class AfterSalePolicyService:
@@ -129,6 +163,7 @@ class AfterSalePolicyService:
             policy_basis=policy_basis,
             order_call=order_call,
             logistics_call=logistics_call,
+            user_message=request.user_message,
         )
         return AfterSaleBoundaryResult(
             assessment=assessment,
@@ -143,6 +178,7 @@ class AfterSalePolicyService:
         policy_basis: list[Citation],
         order_call: ToolCallRecord | None,
         logistics_call: ToolCallRecord | None,
+        user_message: str = "",
     ) -> HighRiskAssessment:
         """Evaluate evidence collected by explicit workflow nodes."""
 
@@ -171,6 +207,7 @@ class AfterSalePolicyService:
         order_facts = order_call.observation.facts
         logistics_facts = logistics_call.observation.facts
         order_status = _normalized(order_facts.get("order_status"))
+        fulfillment_status = _normalized(order_facts.get("fulfillment_status"))
         payment_status = _normalized(order_facts.get("payment_status"))
         logistics_status = _normalized(logistics_facts.get("logistics_status"))
         not_shipped = logistics_status in {
@@ -180,6 +217,12 @@ class AfterSalePolicyService:
             "PENDING",
             "待发货",
         } and order_status not in {"SHIPPED", "DELIVERED", "COMPLETED", "已发货", "已完成"}
+        not_shipped = not_shipped and fulfillment_status not in {
+            "SHIPPED",
+            "IN_TRANSIT",
+            "DELIVERED",
+            "SIGNED",
+        }
         signed = logistics_status in {"SIGNED", "DELIVERED", "已签收"} or order_status in {
             "DELIVERED",
             "COMPLETED",
@@ -200,14 +243,42 @@ class AfterSalePolicyService:
                 )
             ]
         elif action_type == "return":
-            status = "eligible_for_application" if signed else "not_eligible"
-            reasons = [
-                (
-                    "订单已签收，可进入退货申请资格复核，但不得自动批准。"
-                    if signed
-                    else "订单尚未形成可信签收事实，不能判断为可发起签收后退货。"
-                )
-            ]
+            evidence.extend(["签收时间", "商品可退属性", "退货原因"])
+            delivered_at = (
+                logistics_facts.get("delivered_at")
+                or order_facts.get("delivered_at")
+            )
+            days_since_signed = _signed_days(delivered_at)
+            returnable = order_facts.get("returnable")
+            has_reason = _has_return_reason(user_message)
+            within_window = (
+                days_since_signed is not None and 0 <= days_since_signed <= 7
+            )
+            eligible = signed and within_window and returnable is True and has_reason
+            if eligible:
+                status = "eligible_for_application"
+                reasons = [
+                    f"订单已签收 {days_since_signed} 天，商品支持退货且原因符合基础条件；只能准备申请，不得自动批准。"
+                ]
+            elif not signed:
+                status = "not_eligible"
+                reasons = ["订单尚未形成可信签收事实，不能进入签收后退货流程。"]
+            elif days_since_signed is None:
+                status = "blocked"
+                reasons = ["缺少可信签收时间，无法判断是否仍在七天退货窗口内。"]
+            elif not within_window:
+                status = "not_eligible"
+                reasons = ["订单签收已超过 7 天，不能按七天无理由进入退货申请。"]
+            elif returnable is not True:
+                status = "not_eligible" if returnable is False else "blocked"
+                reasons = [
+                    "商品明确不支持无理由退货。"
+                    if returnable is False
+                    else "缺少可信的商品可退属性，不能承诺可以退货。"
+                ]
+            else:
+                status = "needs_clarification"
+                reasons = ["请补充退货原因，例如七天无理由、质量问题、破损或错发。"]
         elif action_type == "cancel":
             status = "eligible_for_application" if not_shipped else "not_eligible"
             reasons = [

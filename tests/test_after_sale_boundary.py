@@ -1,7 +1,8 @@
-"""Offline regression tests for the lesson-26 high-risk action boundary."""
+"""Offline regressions for the refund and received-return boundaries."""
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 import sys
 import unittest
@@ -51,28 +52,48 @@ class BoundaryEcommerceClient:
         order_status: str = "PENDING_SHIPMENT",
         payment_status: str = "PAID",
         logistics_status: str = "NOT_SHIPPED",
+        fulfillment_status: str | None = None,
+        delivered_days_ago: int | None = None,
+        returnable: bool | None = None,
     ) -> None:
         self.order_status = order_status
         self.payment_status = payment_status
         self.logistics_status = logistics_status
+        self.fulfillment_status = fulfillment_status
+        self.delivered_days_ago = delivered_days_ago
+        self.returnable = returnable
         self.calls: list[tuple[str, str, str]] = []
 
     def get_order(self, order_id: str, runtime_user_id: str) -> dict:
         self.calls.append(("order", order_id, runtime_user_id))
-        return {
+        payload = {
             "orderNo": order_id,
             "status": self.order_status,
             "paymentStatus": self.payment_status,
             "userId": "PRIVATE-USER-ID",
             "remark": "PRIVATE-ORDER-REMARK",
         }
+        if self.fulfillment_status is not None:
+            payload["fulfillmentStatus"] = self.fulfillment_status
+        if self.delivered_days_ago is not None:
+            payload["deliveredAt"] = (
+                date.today() - timedelta(days=self.delivered_days_ago)
+            ).isoformat()
+        if self.returnable is not None:
+            payload["returnable"] = self.returnable
+        return payload
 
     def get_logistics(self, order_id: str, runtime_user_id: str) -> dict:
         self.calls.append(("logistics", order_id, runtime_user_id))
-        return {
+        payload = {
             "status": self.logistics_status,
             "trackingNo": "PRIVATE-TRACKING-NUMBER",
         }
+        if self.delivered_days_ago is not None:
+            payload["deliveredAt"] = (
+                date.today() - timedelta(days=self.delivered_days_ago)
+            ).isoformat()
+        return payload
 
 
 class AfterSaleBoundaryTests(unittest.TestCase):
@@ -149,6 +170,61 @@ class AfterSaleBoundaryTests(unittest.TestCase):
             "not_eligible",
         )
         self.assertIn("不能直接", response.answer)
+
+    def test_received_return_checks_window_returnability_and_reason(self) -> None:
+        response = self.agent(
+            BoundaryEcommerceClient(
+                order_status="DELIVERED",
+                logistics_status="SIGNED",
+                fulfillment_status="DELIVERED",
+                delivered_days_ago=3,
+                returnable=True,
+            )
+        ).chat(self.request(f"订单 {ORDER_ID} 已签收，七天无理由退货"))
+
+        self.assertEqual(response.workflow.workflow_type, "received_return")
+        self.assertEqual(response.workflow.pending_action, "prepare_return_application")
+        self.assertEqual(
+            response.after_sale_assessment.eligibility_status,
+            "eligible_for_application",
+        )
+        self.assertIn("签收时间", response.after_sale_assessment.evidence_checklist)
+        self.assertFalse(response.session_state["risk_boundary"]["write_executed"])
+
+    def test_received_return_outside_seven_day_window_is_not_eligible(self) -> None:
+        response = self.agent(
+            BoundaryEcommerceClient(
+                order_status="DELIVERED",
+                logistics_status="SIGNED",
+                fulfillment_status="DELIVERED",
+                delivered_days_ago=8,
+                returnable=True,
+            )
+        ).chat(self.request(f"订单 {ORDER_ID} 已签收，七天无理由退货"))
+
+        self.assertEqual(
+            response.after_sale_assessment.eligibility_status,
+            "not_eligible",
+        )
+        self.assertIn("超过 7 天", response.after_sale_assessment.reasons[0])
+
+    def test_received_return_requires_an_explicit_reason(self) -> None:
+        response = self.agent(
+            BoundaryEcommerceClient(
+                order_status="DELIVERED",
+                logistics_status="SIGNED",
+                fulfillment_status="DELIVERED",
+                delivered_days_ago=2,
+                returnable=True,
+            )
+        ).chat(self.request(f"订单 {ORDER_ID} 我要退货"))
+
+        self.assertEqual(
+            response.after_sale_assessment.eligibility_status,
+            "needs_clarification",
+        )
+        self.assertEqual(response.next_action, "ask_clarification")
+        self.assertIn("退货原因", response.answer)
 
     def test_compensation_always_requires_manual_review(self) -> None:
         response = self.agent(BoundaryEcommerceClient()).chat(

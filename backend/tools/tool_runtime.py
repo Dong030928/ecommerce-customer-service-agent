@@ -13,6 +13,7 @@ from tools.planning import ORDER_ID_PATTERN, REFUND_ID_PATTERN
 from tools.runtime_context import (
     current_user_orders_truncated,
     order_candidates,
+    trusted_order_eligibility_facts,
 )
 
 if TYPE_CHECKING:
@@ -127,10 +128,16 @@ class ToolRuntime:
                 source="trusted_runtime_context",
             )
         if action.tool_name == "get_order_status":
+            order_id = str(action.arguments["order_id"])
             order = self._ecommerce_client.get_order(
-                str(action.arguments["order_id"]),
+                order_id,
                 request.runtime_user_id,
             )
+            trusted_facts = trusted_order_eligibility_facts(request, order_id)
+            order = {
+                **{key: value for key, value in trusted_facts.items() if value is not None},
+                **order,
+            }
             return ToolResult(
                 tool_name=action.tool_name,
                 status="success",
