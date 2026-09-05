@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.22.0-refund-return-workflows",
-    "title": "Refund and Return Workflows",
-    "summary": "未发货退款与签收后退货进入独立资格分支，核验订单、物流、退货窗口、商品属性、原因与政策依据，并在写入前停止。"
+    "id": "v0.23.0-hitl-pending-approval",
+    "title": "HITL Pending Approval",
+    "summary": "退款或退货资格通过后创建待人工审批请求并暂停工作流；普通聊天不能冒充审批结果。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.22.0"
+    "version": "0.23.0"
   },
   "endpoints": {
     "health": true,
@@ -90,7 +90,11 @@
     "returnable_product_check": true,
     "return_reason_check": true,
     "stop_before_submission": true,
-    "human_approval": false,
+    "human_approval": true,
+    "hitl_pending_approval": true,
+    "workflow_pause": true,
+    "chat_approval_claim_guard": true,
+    "approval_decision": false,
     "chat_resume": false,
     "checkpoint": false,
     "idempotency": false,
@@ -115,10 +119,10 @@
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
     "prompt_registry": "当前运行链路已从 Prompt Registry 转向按问题检索相关知识。",
     "full_prompt_context": "当前版本只把本轮检索命中的少量知识放入 Prompt。",
-    "human_approval": "当前只返回 needs_human_approval 和 transfer_to_human 边界，真实 HITL 审批流程还没有接入。",
-    "chat_resume": "当前工作流同步运行到提交前停止，不提供 /chat/resume。",
-    "checkpoint": "当前 StateGraph 尚未配置持久化 checkpointer。",
-    "idempotency": "当前没有售后写入节点，因此尚未实现写操作幂等键。",
+    "approval_decision": "当前只创建 pending 审批请求，Agent 不能批准或拒绝。",
+    "chat_resume": "当前工作流暂停在待人工审批状态，不提供 /chat/resume。",
+    "checkpoint": "当前待审批请求未配置持久化 checkpointer。",
+    "idempotency": "当前尚未恢复审批结果或提交最终业务申请，因此未实现写操作幂等键。",
     "memory": "多轮记忆还没有接入。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "trace": "Trace 公开轨迹还没有接入。",

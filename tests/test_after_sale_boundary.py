@@ -183,7 +183,10 @@ class AfterSaleBoundaryTests(unittest.TestCase):
         ).chat(self.request(f"订单 {ORDER_ID} 已签收，七天无理由退货"))
 
         self.assertEqual(response.workflow.workflow_type, "received_return")
-        self.assertEqual(response.workflow.pending_action, "prepare_return_application")
+        self.assertEqual(response.workflow.pending_action, "require_human_approval")
+        self.assertEqual(response.workflow.status, "paused")
+        self.assertEqual(response.approval.status, "pending")
+        self.assertEqual(response.approval.workflow_id, response.workflow.workflow_id)
         self.assertEqual(
             response.after_sale_assessment.eligibility_status,
             "eligible_for_application",
@@ -206,6 +209,7 @@ class AfterSaleBoundaryTests(unittest.TestCase):
             response.after_sale_assessment.eligibility_status,
             "not_eligible",
         )
+        self.assertIsNone(response.approval)
         self.assertIn("超过 7 天", response.after_sale_assessment.reasons[0])
 
     def test_received_return_requires_an_explicit_reason(self) -> None:
@@ -225,6 +229,7 @@ class AfterSaleBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(response.next_action, "ask_clarification")
         self.assertIn("退货原因", response.answer)
+        self.assertIsNone(response.approval)
 
     def test_compensation_always_requires_manual_review(self) -> None:
         response = self.agent(BoundaryEcommerceClient()).chat(

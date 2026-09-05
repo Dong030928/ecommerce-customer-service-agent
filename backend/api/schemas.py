@@ -43,7 +43,8 @@ AfterSaleWorkflowType = Literal[
     "compensation_review",
     "unknown",
 ]
-WorkflowStatus = Literal["running", "completed", "blocked"]
+WorkflowStatus = Literal["running", "completed", "blocked", "paused"]
+ApprovalDecision = Literal["approved", "rejected", "needs_more_info"]
 ErrorCategory = Literal[
     "none",
     "timeout",
@@ -177,6 +178,20 @@ class WorkflowSummary(BaseModel):
     pending_action: str
     node_history: list[str] = Field(default_factory=list)
     used_langgraph: bool = True
+    boundary: str
+    approval_id: str | None = None
+
+
+class ApprovalRequest(BaseModel):
+    """Pending human review request; it is not an approval decision."""
+
+    approval_id: str
+    workflow_id: str
+    status: Literal["pending"] = "pending"
+    required_role: str
+    submitted_by: str
+    risk_summary: str
+    decision_options: list[ApprovalDecision]
     boundary: str
 
 
@@ -535,6 +550,7 @@ class ChatResponse(BaseModel):
     planner_trace: PlannerTrace | None = None
     after_sale_assessment: HighRiskAssessment | None = None
     workflow: WorkflowSummary | None = None
+    approval: ApprovalRequest | None = None
     citations: list[Citation] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     hook_events: list[HookEvent] = Field(default_factory=list)
@@ -578,6 +594,9 @@ WorkflowSummary.model_rebuild(
         "AfterSaleWorkflowType": AfterSaleWorkflowType,
         "WorkflowStatus": WorkflowStatus,
     }
+)
+ApprovalRequest.model_rebuild(
+    _types_namespace={"ApprovalDecision": ApprovalDecision, "Literal": Literal}
 )
 ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
 MCPToolDefinition.model_rebuild(
@@ -659,5 +678,6 @@ ChatResponse.model_rebuild(
         "ClarificationRequest": ClarificationRequest,
         "ToolCallRecord": ToolCallRecord,
         "WorkflowSummary": WorkflowSummary,
+        "ApprovalRequest": ApprovalRequest,
     }
 )

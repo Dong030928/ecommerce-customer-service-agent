@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 
 from api.schemas import (
     AfterSaleWorkflowType,
+    ApprovalRequest,
     ChatRequest,
     Citation,
     HighRiskActionType,
@@ -17,6 +18,7 @@ from api.schemas import (
     WorkflowStatus,
     WorkflowSummary,
 )
+from approvals.hitl import build_approval_request, is_chat_approval_claim
 from hooks.manager import HookManager
 from policies.after_sale_policy import (
     AfterSalePolicyService,
@@ -46,11 +48,13 @@ class AfterSaleWorkflowState(TypedDict, total=False):
     policy_state: dict[str, Any]
     tool_calls: list[ToolCallRecord]
     assessment: HighRiskAssessment | None
+    approval: ApprovalRequest | None
     status: WorkflowStatus
     current_node: str
     pending_action: str
     node_history: list[str]
     answer: str
+    used_langgraph: bool
 
 
 class AfterSaleWorkflow:
@@ -75,13 +79,53 @@ class AfterSaleWorkflow:
         """Initialize one request-scoped graph state and execute it synchronously."""
 
         order_id = extract_order_id(request.user_message)
+        action_type = detect_high_risk_action(request.user_message)
+        workflow_id = f"wf-{request.session_id}-{order_id or 'missing'}"
+        if is_chat_approval_claim(request.user_message):
+            return {
+                "request": request,
+                "intent_result": intent_result,
+                "hooks": hooks,
+                "workflow_id": workflow_id,
+                "workflow_type": "unknown",
+                "action_type": action_type,
+                "order_id": order_id,
+                "citations": [],
+                "policy_state": {
+                    "status": "skipped_chat_approval_claim",
+                    "mode": "hitl_guard",
+                    "citation_count": 0,
+                },
+                "tool_calls": [],
+                "assessment": HighRiskAssessment(
+                    action_type=action_type,
+                    order_id=order_id,
+                    eligibility_status="blocked",
+                    evidence_checklist=[],
+                    reasons=["普通聊天消息不能作为售后主管的审批决策。"],
+                    blocked_write_actions=[
+                        "create_refund",
+                        "approve_refund",
+                        "approve_return",
+                        "cancel_order",
+                        "create_compensation",
+                    ],
+                ),
+                "approval": None,
+                "status": "blocked",
+                "current_node": "reject_chat_approval_claim",
+                "pending_action": "use_hitl_approval_channel",
+                "node_history": ["reject_chat_approval_claim"],
+                "answer": "普通聊天不能作为审批，审批结果必须来自受控 HITL 通道。",
+                "used_langgraph": False,
+            }
         initial_state: AfterSaleWorkflowState = {
             "request": request,
             "intent_result": intent_result,
             "hooks": hooks,
-            "workflow_id": f"wf-{request.session_id}-{order_id or 'missing'}",
+            "workflow_id": workflow_id,
             "workflow_type": "unknown",
-            "action_type": detect_high_risk_action(request.user_message),
+            "action_type": action_type,
             "order_id": order_id,
             "citations": [],
             "policy_state": {
@@ -91,11 +135,13 @@ class AfterSaleWorkflow:
             },
             "tool_calls": [],
             "assessment": None,
+            "approval": None,
             "status": "running",
             "current_node": "classify_after_sale_intent",
             "pending_action": "run_workflow",
             "node_history": [],
             "answer": "",
+            "used_langgraph": True,
         }
         return self.graph.invoke(initial_state)
 
@@ -250,20 +296,23 @@ class AfterSaleWorkflow:
             if assessment.eligibility_status in {"blocked", "needs_clarification"}
             else "completed"
         )
+        approval: ApprovalRequest | None = None
         eligible = assessment.eligibility_status == "eligible_for_application"
-        pending_actions = {
-            "unshipped_refund": "prepare_refund_application",
-            "received_return": "prepare_return_application",
-        }
-        pending_action = (
-            pending_actions.get(state["workflow_type"], "explain_boundary")
-            if eligible
-            else "explain_boundary"
-        )
+        approvable_workflows = {"unshipped_refund", "received_return"}
+        if eligible and state["workflow_type"] in approvable_workflows:
+            approval = build_approval_request(
+                workflow_id=state["workflow_id"],
+                workflow_type=state["workflow_type"],
+                assessment=assessment,
+            )
+            status = "paused"
+            pending_action = "require_human_approval"
+        else:
+            pending_action = "explain_boundary"
         if eligible and state["workflow_type"] == "received_return":
-            answer = "签收时间、商品可退属性、退货原因和政策依据均已核验；当前只可准备退货申请，尚未提交或批准。"
+            answer = "签收时间、商品可退属性、退货原因和政策依据均已核验；已创建待人工审批请求，但尚未批准或执行退货。"
         elif eligible and state["workflow_type"] == "unshipped_refund":
-            answer = "订单已支付且未发货；当前只可准备退款申请，尚未提交、退款或完成人工审批。"
+            answer = "订单已支付且未发货；已创建待人工审批请求，但尚未批准或执行退款。"
         else:
             answer = "售后工作流已完成资格判断，并在任何业务写入前停止。"
         return self._complete(
@@ -271,6 +320,7 @@ class AfterSaleWorkflow:
             "stop_before_submission",
             {
                 "assessment": assessment,
+                "approval": approval,
                 "status": status,
                 "pending_action": pending_action,
                 "answer": state.get("answer") or answer,
@@ -306,6 +356,14 @@ class AfterSaleWorkflow:
     def summary(state: AfterSaleWorkflowState) -> WorkflowSummary:
         """Compress internal objects into a stable frontend-facing summary."""
 
+        boundary = (
+            "审批结果必须来自受控 HITL 通道；普通聊天中的批准说法已被阻断。"
+            if not state.get("used_langgraph", True)
+            else (
+                "资格通过后只创建待人工审批请求并暂停；普通聊天不能充当审批，"
+                "当前不执行审批、不持久化 checkpoint，也不提供 /chat/resume。"
+            )
+        )
         return WorkflowSummary(
             workflow_id=state["workflow_id"],
             workflow_type=state["workflow_type"],
@@ -313,9 +371,9 @@ class AfterSaleWorkflow:
             current_node=state["current_node"],
             pending_action=state["pending_action"],
             node_history=state["node_history"],
-            used_langgraph=True,
-            boundary=(
-                "StateGraph 固定售后节点顺序；当前不提交申请、不执行审批、"
-                "不持久化 checkpoint，也不返回 resume_token。"
+            used_langgraph=state.get("used_langgraph", True),
+            boundary=boundary,
+            approval_id=(
+                state["approval"].approval_id if state.get("approval") else None
             ),
         )

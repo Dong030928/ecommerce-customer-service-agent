@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.22.0
+## v0.23.0
 
 当前版本提供：
 
@@ -59,7 +59,7 @@
 - 参数错误、无权限、未找到和业务错误不会自动重试，避免无意义请求和副作用风险；
 - 工具或模型失败时使用确定性安全模板降级，不把异常详情、响应体或凭证交给模型；
 - 在 RAG 和 Tool Calling 前拦截直接退款、取消订单和赔付等高风险写请求，不执行写操作；
-- 顶层返回 `risk_level`、`needs_human_approval` 与 `degraded`，并用 `transfer_to_human` 表示人工边界；
+- 顶层返回 `risk_level`、`needs_human_approval` 与 `degraded`；成功创建待审批请求不标记为降级，证据不足或审批冒充仍安全降级；
 - 将商品问题细分为纯实时工具、纯稳定知识 RAG、Tool + RAG 联合回答三条路由；
 - 同时询问商品库存/价格与卖点/活动规则时，在一个响应中返回 `tool_calls` 和 `citations`；
 - 当前标价、活动价、库存、活动名称和会员条件只来自商品业务接口的安全 Observation；
@@ -91,10 +91,12 @@
 - `blocked_write_actions` 明确禁止退款、批准退款、取消订单和创建补偿；
 - 使用 LangGraph `StateGraph` 固定售后类型识别、订单校验、物流读取、政策检索、资格判断和提交前停止节点；
 - 顶层 `workflow` 与 `session_state.workflow` 返回工作流类型、状态、当前节点及完整节点历史；
-- 未发货退款仅在订单已支付、未出库且未发货时标记为可准备申请，并返回 `prepare_refund_application`；
-- 签收后退货独立核验签收状态、七天窗口、商品可退属性、退货原因与政策依据，并返回 `prepare_return_application`；
+- 未发货退款仅在订单已支付、未出库且未发货时进入待人工审批；
+- 签收后退货独立核验签收状态、七天窗口、商品可退属性、退货原因与政策依据后进入待人工审批；
 - 商品可退属性可由已认证应用网关注入的精确订单上下文补齐，业务 API 已有事实保持更高优先级；
-- 工作流停在 `stop_before_submission`，不提交申请、不执行审批，也不返回恢复令牌；
+- 资格通过后创建结构化 `ApprovalRequest(status=pending)`，工作流转为 `paused` 并返回 `require_human_approval`；
+- 普通聊天中的“主管同意”“审批通过”等说法会被阻断，不能伪装成审批结果；
+- 当前只创建待审批请求，不执行批准、退款或退货，也不提供 `/chat/resume`、checkpoint 或恢复令牌；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -108,7 +110,7 @@
 
 当前入口先执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook，并返回 Planner 与 MCP 摘要。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入公开响应。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；工具仍只支持只读查询。高风险请求已接入同步 LangGraph 工作流，但尚未实现 checkpoint、暂停/恢复、真实 HITL 审批、幂等写入、多轮澄清状态记忆或远程 MCP Server 连接。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；工具仍只支持只读查询。高风险请求已接入 LangGraph 与待人工审批边界，但尚未实现 checkpoint、审批结果恢复、幂等写入、多轮澄清状态记忆或远程 MCP Server 连接。
 
 ## 项目结构
 
@@ -207,7 +209,7 @@ python -m unittest discover -s tests -v
 
 商品混合问题会同时返回 `tool_calls` 与 `citations`。`session_state.tool_rag` 明确记录 `current_price_inventory=tool`、`product_and_promotion_knowledge=rag`，并暴露最终采用的工具与 citation chunk；活动价和当前活动取自商品接口中的 `promotion`，活动 ID、起止时间和未白名单字段不会进入模型。纯库存/价格问题仍只走工具，纯卖点/规则问题仍只走 RAG。
 
-“直接退款、取消订单或赔付”等写请求会在任何检索或工具调用之前被拦截：响应返回 `risk_level=high`、`needs_human_approval=true`、`degraded=true` 和 `next_action=transfer_to_human`。这只是明确的人工接管边界，不代表已经创建工单、执行退款或完成 HITL 审批。
+“直接退款、取消订单或赔付”等写请求会在普通工具调用之前进入高风险工作流：符合退款或退货资格时返回 `ApprovalRequest(status=pending)` 并暂停；这不代表人工已经批准，更不代表已经执行退款或退货。
 
 运行中修改知识文件后，可重启服务或在受控维护流程中调用 `rebuild_knowledge_index()` 重建索引；项目不暴露无鉴权的 HTTP 重建接口。重建会原子替换索引快照，并清空依赖旧版本的向量和检索缓存。
 

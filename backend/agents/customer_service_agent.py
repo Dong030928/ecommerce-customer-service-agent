@@ -491,7 +491,7 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.22.0"
+        state["agent_version"] = "0.23.0"
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -502,8 +502,8 @@ class CustomerServiceAgent:
             "hitl_approval_performed": False,
         }
         state["next_gap"] = (
-            "高风险售后已进入固定 LangGraph 节点流；下一步细化未发货退款"
-            "与签收后退货流程。"
+            "高风险售后可创建待人工审批请求并暂停；下一步实现受控审批结果"
+            "恢复、checkpoint 与幂等。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -604,6 +604,7 @@ class CustomerServiceAgent:
         if assessment is None:
             raise RuntimeError("after-sale workflow completed without an assessment")
         workflow = self._after_sale_workflow.summary(workflow_state)
+        approval = workflow_state.get("approval")
         action_type = assessment.action_type
         order_id = assessment.order_id
         citations = workflow_state["citations"]
@@ -622,7 +623,12 @@ class CustomerServiceAgent:
             "compensation": "补偿",
             "unknown": "售后",
         }[action_type]
-        if assessment.eligibility_status == "eligible_for_application":
+        if approval is not None:
+            answer = (
+                f"订单 {order_id} 已通过{action_label}申请资格检查，"
+                "现已创建待人工审批请求并暂停流程。当前尚未批准，也没有执行退款或退货。"
+            )
+        elif assessment.eligibility_status == "eligible_for_application":
             answer = (
                 f"订单 {order_id} 当前只判断为可发起{action_label}申请。"
                 "我不会直接执行退款、退货、取消或补偿，后续必须进入受控流程并由人工确认。"
@@ -638,7 +644,11 @@ class CustomerServiceAgent:
         if citations:
             answer += " 政策依据见 [C1]。"
 
-        degradation = high_risk_degradation()
+        degradation = (
+            DegradationState()
+            if approval is not None
+            else high_risk_degradation()
+        )
         evidence_messages = [
             {
                 "role": "system",
@@ -672,19 +682,20 @@ class CustomerServiceAgent:
             tool_calls=tool_calls,
             after_sale_assessment=assessment,
             workflow=workflow,
+            approval=approval,
             next_action=next_action,
             risk_level="high",
             needs_human_approval=True,
-            degraded=True,
+            degraded=degradation.degraded,
             cost_summary=cost_summary,
             reasoning_summary=[
-                "高风险售后只能读取事实并判断申请资格，不能执行任何业务写动作。",
+                "高风险售后完成资格检查后，只能创建待人工审批请求，不能自行批准。",
                 "资格判断同时检查当前用户订单、物流状态和真实 RAG 售后政策依据。",
                 "LangGraph 固定节点依次完成售后类型识别、订单校验、物流读取、政策检索和资格判断。",
-                "工作流停在提交前边界；尚未创建审批单、退款记录或可恢复 checkpoint。",
+                "符合条件的退款或退货工作流暂停在人工审批边界；尚未开放审批恢复或业务写入。",
             ],
             session_state={
-                "agent_version": "0.22.0",
+                "agent_version": "0.23.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -699,7 +710,10 @@ class CustomerServiceAgent:
                     "risk_level": "high",
                     "needs_human_approval": True,
                     "write_executed": False,
-                    "workflow_started": True,
+                    "workflow_started": workflow.used_langgraph,
+                    "chat_approval_claim_blocked": not workflow.used_langgraph,
+                    "approval_requested": approval is not None,
+                    "human_approval_performed": False,
                     "assessment": assessment.model_dump(),
                     "read_only_evidence_collected": bool(tool_calls),
                 },
@@ -713,11 +727,12 @@ class CustomerServiceAgent:
                 "rag": policy_state,
                 "rag_quality": {"status": "skipped_high_risk_boundary"},
                 "workflow": workflow.model_dump(),
+                "approval": approval.model_dump() if approval else None,
                 "cost_log": {
                     "event_count": len(self._cost_events_by_session[request.session_id]),
                     "latest": event,
                 },
-                "next_gap": "退款与退货资格流已细化；下一步接入真实人工审批与可恢复工作流。",
+                "next_gap": "已创建待人工审批请求并暂停；下一步实现受控审批结果恢复、checkpoint 与幂等。",
             },
         )
 
@@ -845,7 +860,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.22.0",
+                "agent_version": "0.23.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1032,7 +1047,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.22.0"
+        state["agent_version"] = "0.23.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1355,7 +1370,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.22.0",
+            "agent_version": "0.23.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
