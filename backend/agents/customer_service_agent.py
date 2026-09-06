@@ -8,6 +8,8 @@ import httpx
 
 from api.schemas import (
     ChatRequest,
+    ChatResumeRequest,
+    ChatResumeResponse,
     ChatResponse,
     Citation,
     ClarificationRequest,
@@ -491,7 +493,7 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.23.0"
+        state["agent_version"] = "0.24.0"
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -695,7 +697,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；尚未开放审批恢复或业务写入。",
             ],
             session_state={
-                "agent_version": "0.23.0",
+                "agent_version": "0.24.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -732,7 +734,7 @@ class CustomerServiceAgent:
                     "event_count": len(self._cost_events_by_session[request.session_id]),
                     "latest": event,
                 },
-                "next_gap": "已创建待人工审批请求并暂停；下一步实现受控审批结果恢复、checkpoint 与幂等。",
+                "next_gap": "审批流程已支持 checkpoint、安全恢复和幂等记录；下一步治理多轮上下文与记忆边界。",
             },
         )
 
@@ -860,7 +862,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.23.0",
+                "agent_version": "0.24.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1047,7 +1049,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.23.0"
+        state["agent_version"] = "0.24.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1370,7 +1372,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.23.0",
+            "agent_version": "0.24.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1497,3 +1499,8 @@ class CustomerServiceAgent:
             route_plan,
             planner_trace,
         )
+
+    def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:
+        """Resume HITL through checkpoint validation, never through ordinary chat."""
+
+        return self._after_sale_workflow.resume(request)

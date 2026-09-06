@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import ChatRequest, ChatResponse
+from api.schemas import ChatRequest, ChatResponse, ChatResumeRequest, ChatResumeResponse
 from config.settings import load_agent_capabilities
 from rag.index_cache import get_knowledge_index
 
@@ -23,7 +23,7 @@ def create_router(agent_provider: Any) -> APIRouter:
         index = get_knowledge_index()
         return {
             "status": "ok",
-            "version": "0.23.0",
+            "version": "0.24.0",
             "rag_index_version": index.version,
             "rag_index_chunks": index.chunk_count,
         }
@@ -40,6 +40,15 @@ def create_router(agent_provider: Any) -> APIRouter:
 
         try:
             return agent_provider().chat(request)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.post("/chat/resume", response_model=ChatResumeResponse)
+    def chat_resume(request: ChatResumeRequest) -> ChatResumeResponse:
+        """Resume a paused HITL workflow through the dedicated protocol."""
+
+        try:
+            return agent_provider().resume(request)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

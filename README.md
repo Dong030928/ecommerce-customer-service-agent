@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.23.0
+## v0.24.0
 
 当前版本提供：
 
@@ -96,7 +96,11 @@
 - 商品可退属性可由已认证应用网关注入的精确订单上下文补齐，业务 API 已有事实保持更高优先级；
 - 资格通过后创建结构化 `ApprovalRequest(status=pending)`，工作流转为 `paused` 并返回 `require_human_approval`；
 - 普通聊天中的“主管同意”“审批通过”等说法会被阻断，不能伪装成审批结果；
-- 当前只创建待审批请求，不执行批准、退款或退货，也不提供 `/chat/resume`、checkpoint 或恢复令牌；
+- 待审批工作流保存进程内 checkpoint，并返回不可预测的 `resume_token`、稳定幂等键和公开冻结字段；
+- 新增独立 `POST /chat/resume`，校验会话、工作流、恢复令牌、审批角色和审批决定；
+- 审批通过前重新读取订单与物流事实，冻结字段发生变化时拒绝沿用旧审批结果；
+- 重复审批恢复命中相同幂等键并返回原申请编号，不重复记录售后申请；
+- 当前提交仍是进程内售后申请记录，不调用真实退款、退货或支付写接口；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -110,7 +114,7 @@
 
 当前入口先执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook，并返回 Planner 与 MCP 摘要。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入公开响应。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引和缓存均为进程内实现，不是独立向量数据库或分布式缓存。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；工具仍只支持只读查询。高风险请求已接入 LangGraph 与待人工审批边界，但尚未实现 checkpoint、审批结果恢复、幂等写入、多轮澄清状态记忆或远程 MCP Server 连接。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引、缓存、checkpoint 和模拟售后申请记录均为进程内实现，不是独立数据库或分布式状态服务。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；业务工具仍只支持只读查询。高风险请求已接入 LangGraph、HITL 恢复和幂等记录，但审批人字段仍依赖受信网关注入，尚未接入独立认证/RBAC、持久化 checkpoint、真实业务写入、多轮澄清状态记忆或远程 MCP Server 连接。
 
 ## 项目结构
 

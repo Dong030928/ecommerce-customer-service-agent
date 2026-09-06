@@ -11,7 +11,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from agents.customer_service_agent import CustomerServiceAgent  # noqa: E402
-from api.schemas import ChatRequest  # noqa: E402
+from api.schemas import ChatRequest, ChatResumeRequest  # noqa: E402
 from embeddings.client import EmbeddingClient  # noqa: E402
 from integrations.ecommerce_client import EcommerceClientError  # noqa: E402
 from policies.after_sale_policy import AfterSalePolicyService  # noqa: E402
@@ -56,6 +56,8 @@ class WorkflowEmbeddingClient(EmbeddingClient):
 class WorkflowEcommerceClient:
     def __init__(self, *, fail_order: bool = False) -> None:
         self.fail_order = fail_order
+        self.order_status = "PENDING_SHIPMENT"
+        self.logistics_status = "NOT_SHIPPED"
         self.calls: list[str] = []
 
     def get_order(self, order_id: str, runtime_user_id: str) -> dict:
@@ -68,14 +70,14 @@ class WorkflowEcommerceClient:
             )
         return {
             "orderNo": order_id,
-            "status": "PENDING_SHIPMENT",
+            "status": self.order_status,
             "paymentStatus": "PAID",
         }
 
     def get_logistics(self, order_id: str, runtime_user_id: str) -> dict:
         del order_id, runtime_user_id
         self.calls.append("get_logistics")
-        return {"status": "NOT_SHIPPED"}
+        return {"status": self.logistics_status}
 
 
 class LangGraphWorkflowTests(unittest.TestCase):
@@ -119,6 +121,16 @@ class LangGraphWorkflowTests(unittest.TestCase):
         self.assertEqual(response.workflow.approval_id, response.approval.approval_id)
         self.assertEqual(response.approval.submitted_by, "authenticated_runtime_user")
         self.assertFalse(response.degraded)
+        self.assertTrue(response.workflow.resume_token)
+        self.assertTrue(response.workflow.idempotency_key)
+        self.assertEqual(
+            response.workflow.frozen_fields["order_id"],
+            ORDER_ID,
+        )
+        self.assertNotIn(
+            "TRUSTED-WORKFLOW-USER",
+            str(response.workflow.frozen_fields),
+        )
         self.assertEqual(
             response.session_state["workflow"],
             response.workflow.model_dump(),
@@ -165,7 +177,8 @@ class LangGraphWorkflowTests(unittest.TestCase):
 
         self.assertNotIn("submit_application", response.workflow.node_history)
         self.assertNotIn("approve_refund", response.workflow.node_history)
-        self.assertNotIn("resume_token", public_workflow)
+        self.assertTrue(public_workflow["resume_token"])
+        self.assertTrue(public_workflow["idempotency_key"])
         self.assertFalse(response.session_state["risk_boundary"]["write_executed"])
         self.assertFalse(
             response.session_state["hooks"]["hitl_approval_performed"]
@@ -174,6 +187,96 @@ class LangGraphWorkflowTests(unittest.TestCase):
         self.assertFalse(
             response.session_state["risk_boundary"]["human_approval_performed"]
         )
+
+    def test_resume_approval_rechecks_facts_and_is_idempotent(self) -> None:
+        client = WorkflowEcommerceClient()
+        agent = self.agent(client)
+        pending = agent.chat(self.request(f"订单 {ORDER_ID} 直接退款"))
+        request = ChatResumeRequest(
+            session_id="workflow-test",
+            workflow_id=pending.workflow.workflow_id,
+            resume_token=pending.workflow.resume_token,
+            reviewer_id="manager-01",
+            reviewer_role="after_sale_manager",
+            decision="approved",
+        )
+
+        first = agent.resume(request)
+        replay = agent.resume(request)
+
+        self.assertEqual(first.status, "completed")
+        self.assertTrue(first.business_recheck["passed"])
+        self.assertTrue(first.resume_result.accepted)
+        self.assertFalse(first.resume_result.idempotent_replay)
+        self.assertTrue(replay.resume_result.idempotent_replay)
+        self.assertEqual(first.resume_result.request_id, replay.resume_result.request_id)
+        self.assertFalse(first.session_state["external_business_write_executed"])
+
+    def test_resume_rejects_invalid_token_before_business_recheck(self) -> None:
+        client = WorkflowEcommerceClient()
+        agent = self.agent(client)
+        pending = agent.chat(self.request(f"订单 {ORDER_ID} 直接退款"))
+        calls_before_resume = list(client.calls)
+
+        response = agent.resume(
+            ChatResumeRequest(
+                session_id="workflow-test",
+                workflow_id=pending.workflow.workflow_id,
+                resume_token="invalid-token",
+                reviewer_id="manager-01",
+                reviewer_role="after_sale_manager",
+                decision="approved",
+            )
+        )
+
+        self.assertEqual(response.status, "blocked")
+        self.assertFalse(response.resume_result.accepted)
+        self.assertEqual(client.calls, calls_before_resume)
+
+    def test_resume_rejects_untrusted_reviewer_role(self) -> None:
+        client = WorkflowEcommerceClient()
+        agent = self.agent(client)
+        pending = agent.chat(self.request(f"订单 {ORDER_ID} 直接退款"))
+        calls_before_resume = list(client.calls)
+
+        response = agent.resume(
+            ChatResumeRequest(
+                session_id="workflow-test",
+                workflow_id=pending.workflow.workflow_id,
+                resume_token=pending.workflow.resume_token,
+                reviewer_id="customer-01",
+                reviewer_role="customer",
+                decision="approved",
+            )
+        )
+
+        self.assertEqual(response.status, "blocked")
+        self.assertFalse(response.resume_result.accepted)
+        self.assertIn("售后主管", response.answer)
+        self.assertEqual(client.calls, calls_before_resume)
+
+    def test_resume_blocks_when_business_facts_have_drifted(self) -> None:
+        client = WorkflowEcommerceClient()
+        agent = self.agent(client)
+        pending = agent.chat(self.request(f"订单 {ORDER_ID} 直接退款"))
+        client.order_status = "SHIPPED"
+        client.logistics_status = "IN_TRANSIT"
+
+        response = agent.resume(
+            ChatResumeRequest(
+                session_id="workflow-test",
+                workflow_id=pending.workflow.workflow_id,
+                resume_token=pending.workflow.resume_token,
+                reviewer_id="manager-01",
+                reviewer_role="after_sale_manager",
+                decision="approved",
+            )
+        )
+
+        self.assertEqual(response.status, "blocked")
+        self.assertFalse(response.business_recheck["passed"])
+        self.assertIn("order_status", response.business_recheck["mismatches"])
+        self.assertIsNone(response.resume_result.request_id)
 
     def test_chat_text_cannot_impersonate_an_approval_decision(self) -> None:
         client = WorkflowEcommerceClient()

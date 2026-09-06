@@ -25,6 +25,7 @@ from policies.after_sale_policy import (
     clarification_assessment,
     detect_high_risk_action,
 )
+from state.checkpoints import CheckpointStore, WorkflowResumer
 from tools.planning import extract_order_id
 
 
@@ -49,6 +50,9 @@ class AfterSaleWorkflowState(TypedDict, total=False):
     tool_calls: list[ToolCallRecord]
     assessment: HighRiskAssessment | None
     approval: ApprovalRequest | None
+    resume_token: str | None
+    idempotency_key: str | None
+    frozen_fields: dict[str, Any]
     status: WorkflowStatus
     current_node: str
     pending_action: str
@@ -65,9 +69,16 @@ class AfterSaleWorkflow:
         *,
         policy_service: AfterSalePolicyService,
         policy_retriever: PolicyRetriever,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self._policy_service = policy_service
         self._policy_retriever = policy_retriever
+        self._checkpoint_store = checkpoint_store or CheckpointStore()
+        self._resumer = WorkflowResumer(
+            store=self._checkpoint_store,
+            policy_service=policy_service,
+            agent_version="0.24.0",
+        )
         self.graph = self._build_graph()
 
     def run(
@@ -112,6 +123,9 @@ class AfterSaleWorkflow:
                     ],
                 ),
                 "approval": None,
+                "resume_token": None,
+                "idempotency_key": None,
+                "frozen_fields": {},
                 "status": "blocked",
                 "current_node": "reject_chat_approval_claim",
                 "pending_action": "use_hitl_approval_channel",
@@ -136,6 +150,9 @@ class AfterSaleWorkflow:
             "tool_calls": [],
             "assessment": None,
             "approval": None,
+            "resume_token": None,
+            "idempotency_key": None,
+            "frozen_fields": {},
             "status": "running",
             "current_node": "classify_after_sale_intent",
             "pending_action": "run_workflow",
@@ -143,7 +160,34 @@ class AfterSaleWorkflow:
             "answer": "",
             "used_langgraph": True,
         }
-        return self.graph.invoke(initial_state)
+        result = self.graph.invoke(initial_state)
+        approval = result.get("approval")
+        assessment = result.get("assessment")
+        if (
+            approval is not None
+            and assessment is not None
+            and result.get("status") == "paused"
+        ):
+            checkpoint = self._checkpoint_store.create(
+                request=request,
+                workflow=self.summary(result),
+                approval=approval,
+                assessment=assessment,
+                tool_calls=result.get("tool_calls", []),
+            )
+            result.update(
+                {
+                    "resume_token": checkpoint.resume_token,
+                    "idempotency_key": checkpoint.idempotency_key,
+                    "frozen_fields": checkpoint.frozen_fields,
+                }
+            )
+        return result
+
+    def resume(self, request: "ChatResumeRequest") -> "ChatResumeResponse":
+        """Resume a paused approval only through the dedicated protocol."""
+
+        return self._resumer.resume(request)
 
     def _build_graph(self):
         graph = StateGraph(AfterSaleWorkflowState)
@@ -376,4 +420,7 @@ class AfterSaleWorkflow:
             approval_id=(
                 state["approval"].approval_id if state.get("approval") else None
             ),
+            resume_token=state.get("resume_token"),
+            idempotency_key=state.get("idempotency_key"),
+            frozen_fields=state.get("frozen_fields", {}),
         )

@@ -43,7 +43,7 @@ AfterSaleWorkflowType = Literal[
     "compensation_review",
     "unknown",
 ]
-WorkflowStatus = Literal["running", "completed", "blocked", "paused"]
+WorkflowStatus = Literal["running", "completed", "blocked", "paused", "rejected"]
 ApprovalDecision = Literal["approved", "rejected", "needs_more_info"]
 ErrorCategory = Literal[
     "none",
@@ -180,6 +180,9 @@ class WorkflowSummary(BaseModel):
     used_langgraph: bool = True
     boundary: str
     approval_id: str | None = None
+    resume_token: str | None = None
+    idempotency_key: str | None = None
+    frozen_fields: dict[str, Any] = Field(default_factory=dict)
 
 
 class ApprovalRequest(BaseModel):
@@ -187,12 +190,44 @@ class ApprovalRequest(BaseModel):
 
     approval_id: str
     workflow_id: str
-    status: Literal["pending"] = "pending"
+    status: Literal["pending", "approved", "rejected", "needs_more_info"] = "pending"
     required_role: str
     submitted_by: str
     risk_summary: str
     decision_options: list[ApprovalDecision]
     boundary: str
+
+
+class ChatResumeRequest(BaseModel):
+    """Dedicated authenticated-gateway contract for resuming HITL review."""
+
+    session_id: str
+    workflow_id: str
+    resume_token: str
+    reviewer_id: str
+    reviewer_role: str
+    decision: ApprovalDecision
+    reviewer_note: str | None = None
+
+
+class ResumeResult(BaseModel):
+    decision: ApprovalDecision
+    accepted: bool
+    idempotent_replay: bool = False
+    request_id: str | None = None
+    reason: str
+
+
+class ChatResumeResponse(BaseModel):
+    session_id: str
+    workflow_id: str
+    status: Literal["completed", "paused", "rejected", "blocked"]
+    answer: str
+    workflow: WorkflowSummary | None = None
+    approval: ApprovalRequest | None = None
+    resume_result: ResumeResult
+    business_recheck: dict[str, Any] = Field(default_factory=dict)
+    session_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolSpec(BaseModel):
@@ -597,6 +632,19 @@ WorkflowSummary.model_rebuild(
 )
 ApprovalRequest.model_rebuild(
     _types_namespace={"ApprovalDecision": ApprovalDecision, "Literal": Literal}
+)
+ChatResumeRequest.model_rebuild(
+    _types_namespace={"ApprovalDecision": ApprovalDecision}
+)
+ResumeResult.model_rebuild(_types_namespace={"ApprovalDecision": ApprovalDecision})
+ChatResumeResponse.model_rebuild(
+    _types_namespace={
+        "Any": Any,
+        "ApprovalRequest": ApprovalRequest,
+        "ResumeResult": ResumeResult,
+        "WorkflowSummary": WorkflowSummary,
+        "Literal": Literal,
+    }
 )
 ToolSpec.model_rebuild(_types_namespace={"RiskLevel": RiskLevel})
 MCPToolDefinition.model_rebuild(

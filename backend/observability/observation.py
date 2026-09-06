@@ -105,6 +105,7 @@ def _order_observation(result: ToolResult) -> ToolObservation:
     order_id = order.get("orderNo")
     status = order.get("status")
     payment_status = order.get("paymentStatus")
+    total_amount = order.get("totalAmount")
     fulfillment_status = order.get("fulfillmentStatus")
     delivered_at = order.get("deliveredAt")
     returnable = order.get("returnable")
@@ -112,6 +113,7 @@ def _order_observation(result: ToolResult) -> ToolObservation:
         "orderNo",
         "status",
         "paymentStatus",
+        "totalAmount",
         "fulfillmentStatus",
         "deliveredAt",
         "returnable",
@@ -120,6 +122,7 @@ def _order_observation(result: ToolResult) -> ToolObservation:
         "order_id": order_id,
         "order_status": status,
         "payment_status": payment_status,
+        "total_amount": total_amount,
         "fulfillment_status": fulfillment_status,
         "delivered_at": delivered_at,
         "returnable": returnable if isinstance(returnable, bool) else None,
