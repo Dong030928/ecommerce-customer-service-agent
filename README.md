@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.24.0
+## v0.25.0
 
 当前版本提供：
 
@@ -101,6 +101,12 @@
 - 审批通过前重新读取订单与物流事实，冻结字段发生变化时拒绝沿用旧审批结果；
 - 重复审批恢复命中相同幂等键并返回原申请编号，不重复记录售后申请；
 - 当前提交仍是进程内售后申请记录，不调用真实退款、退货或支付写接口；
+- 新增短期 Session Memory，只保存受控工具确认的最近订单、最近商品、最近意图和少量低风险偏好；
+- 用户追问“刚才那个订单”时，从当前会话记忆恢复订单引用，并再次通过可信用户身份查询业务事实；
+- 记忆按 `session_id + runtime_user_id` 隔离，不把跨用户的同名会话视为同一记忆空间；
+- 顶层返回 `memory_update` 与 `memory_snapshot`，公开每项接受或拒绝写入的原因和 session TTL；
+- 手机号、地址、审批令牌、系统提示词请求、聊天原文和用户自称不会进入可复用记忆；
+- Memory 只能辅助消歧，不能覆盖 HITL checkpoint、恢复令牌、冻结字段或幂等校验；
 - 模型最终措辞只在所有 Observation 成功且允许直接回答时采用，否则使用确定性安全结果；
 - 默认使用透明的轻量 reranker 重排，可选接入 OpenAI-compatible `/rerank` 服务；
 - 商业 reranker 异常时回退轻量重排，并只公开安全的错误类型；
@@ -112,9 +118,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前入口先执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook，并返回 Planner 与 MCP 摘要。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult 和隐藏推理链不进入公开响应。
+当前入口先用 Session Memory 对“刚才那个订单”做受控消歧，再执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook，并按明确写入策略更新 Session Memory。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult、聊天原文和隐藏推理链不进入记忆或公开响应。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引、缓存、checkpoint 和模拟售后申请记录均为进程内实现，不是独立数据库或分布式状态服务。当前 TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；业务工具仍只支持只读查询。高风险请求已接入 LangGraph、HITL 恢复和幂等记录，但审批人字段仍依赖受信网关注入，尚未接入独立认证/RBAC、持久化 checkpoint、真实业务写入、多轮澄清状态记忆或远程 MCP Server 连接。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引、缓存、checkpoint、Session Memory 和模拟售后申请记录均为进程内实现，不是独立数据库或分布式状态服务。当前 Memory 不是长期用户画像，也没有完整 Context Builder、上下文压缩和持久化；TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；业务工具仍只支持只读查询。高风险请求已接入 LangGraph、HITL 恢复和幂等记录，但审批人字段仍依赖受信网关注入，尚未接入独立认证/RBAC、持久化 checkpoint、真实业务写入或远程 MCP Server 连接。
 
 ## 项目结构
 
@@ -130,6 +136,7 @@ backend/
   hooks/        # 工具前后、异常与完成阶段的公开安全治理
   integrations/ # 电商业务后端客户端与安全错误映射
   mcp_catalog/  # MCP-style 工具、Resource、Prompt 统一目录与绑定摘要
+  memory/       # 有写入策略和排除策略的进程内 Session Memory
   models/       # OpenAI-compatible 分类和回答模型客户端
   observability/ # ToolResult 到安全 Observation 的压缩层
   planner/      # TaskPlanner、RoutePlan 白名单约束与公开 PlannerTrace

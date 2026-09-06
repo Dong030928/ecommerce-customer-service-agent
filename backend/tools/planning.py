@@ -304,7 +304,14 @@ def should_route_to_realtime_tool(intent: Intent, message: str) -> bool:
     if intent == "refund_status_query":
         return True
     if intent == "order_query":
-        return is_realtime_business_query(message) or bool(extract_order_id(message))
+        return (
+            is_realtime_business_query(message)
+            or bool(extract_order_id(message))
+            or any(
+                term in message
+                for term in ("刚才那个", "刚刚那个", "上一个订单", "前面那个订单")
+            )
+        )
     if intent != "product_consult":
         return False
     realtime_terms = PRODUCT_REALTIME_TERMS

@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.24.0-resume-checkpoint-idempotency",
-    "title": "Resume, Checkpoint and Idempotency",
-    "summary": "待审批工作流通过独立 /chat/resume 恢复，并校验 token、角色、冻结字段、实时业务事实和幂等键。"
+    "id": "v0.25.0-session-memory",
+    "title": "Session Memory",
+    "summary": "新增按会话与可信用户隔离的短期记忆，只保存已验证订单、商品、最近意图和低风险偏好。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.24.0"
+    "version": "0.25.0"
   },
   "endpoints": {
     "health": true,
@@ -107,7 +107,16 @@
     "idempotency": true,
     "simulated_after_sale_submission": true,
     "external_business_write": false,
-    "memory": false,
+    "memory": true,
+    "session_memory": true,
+    "memory_write_policy": true,
+    "memory_exclusion": true,
+    "memory_user_isolation": true,
+    "memory_raw_messages": false,
+    "long_term_memory": false,
+    "context_builder": false,
+    "context_compression": false,
+    "prompt_injection_defense": false,
     "hooks": true,
     "pre_tool_call_hook": true,
     "post_tool_call_hook": true,
@@ -131,7 +140,10 @@
     "durable_checkpoint": "当前 checkpoint 仅保存在 Agent 进程内，服务重启后不会恢复。",
     "reviewer_identity_authentication": "当前只校验受信网关应传入的审批人和角色字段，尚未接入独立认证与 RBAC 服务。",
     "external_business_write": "审批通过后只记录课程阶段的进程内售后申请，不调用真实退款或退货写接口。",
-    "memory": "多轮记忆还没有接入。",
+    "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
+    "context_builder": "上下文来源编排与冲突处理将在后续版本接入。",
+    "context_compression": "上下文压缩与 Sliding Window 将在后续版本接入。",
+    "prompt_injection_defense": "外部文本隔离与完整 Prompt Injection 防护将在后续版本接入。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "trace": "Trace 公开轨迹还没有接入。",
     "evaluation": "Evaluation 回归评测将在后续版本接入。"

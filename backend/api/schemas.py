@@ -574,6 +574,27 @@ class CostSummary(BaseModel):
     pricing_note: str
 
 
+class MemoryDecision(BaseModel):
+    """Public explanation of one bounded session-memory write decision."""
+
+    key: str
+    value: Any | None = None
+    accepted: bool
+    reason: str
+    ttl: Literal["session"] | None = None
+
+
+class SessionMemorySnapshot(BaseModel):
+    """Low-risk facts retained only for the current session and trusted user."""
+
+    last_order_id: str | None = None
+    last_product_name: str | None = None
+    recent_intent: Intent | None = None
+    low_risk_preferences: dict[str, str] = Field(default_factory=dict)
+    excluded_items: list[str] = Field(default_factory=list)
+    ttl_policy: str = "仅在当前 session 与可信用户范围内保留；不写长期用户画像。"
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
@@ -592,6 +613,10 @@ class ChatResponse(BaseModel):
     hook_completion: HookCompletion | None = None
     mcp_context: MCPBindingSummary | None = None
     clarification: ClarificationRequest | None = None
+    memory_update: list[MemoryDecision] = Field(default_factory=list)
+    memory_snapshot: SessionMemorySnapshot = Field(
+        default_factory=SessionMemorySnapshot
+    )
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
     needs_human_approval: bool = False
@@ -708,6 +733,8 @@ RagQualityCaseResult.model_rebuild()
 RagQualitySummary.model_rebuild(
     _types_namespace={"RagQualityCaseResult": RagQualityCaseResult}
 )
+MemoryDecision.model_rebuild(_types_namespace={"Any": Any, "Literal": Literal})
+SessionMemorySnapshot.model_rebuild(_types_namespace={"Intent": Intent})
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
@@ -727,5 +754,7 @@ ChatResponse.model_rebuild(
         "ToolCallRecord": ToolCallRecord,
         "WorkflowSummary": WorkflowSummary,
         "ApprovalRequest": ApprovalRequest,
+        "MemoryDecision": MemoryDecision,
+        "SessionMemorySnapshot": SessionMemorySnapshot,
     }
 )

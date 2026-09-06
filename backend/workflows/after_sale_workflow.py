@@ -27,6 +27,7 @@ from policies.after_sale_policy import (
 )
 from state.checkpoints import CheckpointStore, WorkflowResumer
 from tools.planning import extract_order_id
+from tools.runtime_context import contextual_order_id
 
 
 PolicyRetriever = Callable[
@@ -77,7 +78,7 @@ class AfterSaleWorkflow:
         self._resumer = WorkflowResumer(
             store=self._checkpoint_store,
             policy_service=policy_service,
-            agent_version="0.24.0",
+            agent_version="0.25.0",
         )
         self.graph = self._build_graph()
 
@@ -89,7 +90,7 @@ class AfterSaleWorkflow:
     ) -> AfterSaleWorkflowState:
         """Initialize one request-scoped graph state and execute it synchronously."""
 
-        order_id = extract_order_id(request.user_message)
+        order_id = extract_order_id(request.user_message) or contextual_order_id(request)
         action_type = detect_high_risk_action(request.user_message)
         workflow_id = f"wf-{request.session_id}-{order_id or 'missing'}"
         if is_chat_approval_claim(request.user_message):
@@ -404,8 +405,8 @@ class AfterSaleWorkflow:
             "审批结果必须来自受控 HITL 通道；普通聊天中的批准说法已被阻断。"
             if not state.get("used_langgraph", True)
             else (
-                "资格通过后只创建待人工审批请求并暂停；普通聊天不能充当审批，"
-                "当前不执行审批、不持久化 checkpoint，也不提供 /chat/resume。"
+                "资格通过后创建待人工审批请求并暂停；恢复时校验 checkpoint、"
+                "token、冻结字段和幂等键，Session Memory 不能覆盖这些事实。"
             )
         )
         return WorkflowSummary(

@@ -35,6 +35,7 @@ from degradation.fallbacks import (
 )
 from embeddings.client import EmbeddingClient, read_embedding_model_name
 from hooks.manager import HookManager
+from memory.session_memory import SessionMemoryStore
 from mcp_catalog.catalog import MCP_CATALOG
 from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
@@ -411,6 +412,7 @@ class CustomerServiceAgent:
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
+        self._memory_store = SessionMemoryStore()
         self._classifier_http_client = classifier_http_client
         self._classifier_api_key = classifier_api_key
         self._classifier_base_url = classifier_base_url
@@ -468,6 +470,8 @@ class CustomerServiceAgent:
         hooks: HookManager,
         route_plan: RoutePlan,
         planner_trace: PlannerTrace,
+        memory_request: ChatRequest,
+        memory_used: bool,
     ) -> ChatResponse:
         """Attach one bounded lifecycle summary to every public response path."""
 
@@ -493,7 +497,12 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
-        state["agent_version"] = "0.24.0"
+        memory_update, memory_snapshot = self._memory_store.update(
+            request=memory_request,
+            intent=response.intent,
+            tool_calls=response.tool_calls,
+        )
+        state["agent_version"] = "0.25.0"
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -503,9 +512,17 @@ class CustomerServiceAgent:
             "full_trace_available": False,
             "hitl_approval_performed": False,
         }
+        state["memory"] = {
+            "snapshot": memory_snapshot.model_dump(),
+            "update": [item.model_dump() for item in memory_update],
+            "used_for_resolution": memory_used,
+            "scope": "session_and_trusted_user",
+            "stores_raw_messages": False,
+            "long_term_profile": False,
+        }
         state["next_gap"] = (
-            "高风险售后可创建待人工审批请求并暂停；下一步实现受控审批结果"
-            "恢复、checkpoint 与幂等。"
+            "已支持有边界的短期 Session Memory；下一步继续治理上下文来源、"
+            "冲突和压缩。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -526,6 +543,8 @@ class CustomerServiceAgent:
                 "mcp_context": mcp_context,
                 "route_plan": route_plan,
                 "planner_trace": planner_trace,
+                "memory_update": memory_update,
+                "memory_snapshot": memory_snapshot,
                 "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
@@ -694,10 +713,10 @@ class CustomerServiceAgent:
                 "高风险售后完成资格检查后，只能创建待人工审批请求，不能自行批准。",
                 "资格判断同时检查当前用户订单、物流状态和真实 RAG 售后政策依据。",
                 "LangGraph 固定节点依次完成售后类型识别、订单校验、物流读取、政策检索和资格判断。",
-                "符合条件的退款或退货工作流暂停在人工审批边界；尚未开放审批恢复或业务写入。",
+                "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.24.0",
+                "agent_version": "0.25.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -862,7 +881,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.24.0",
+                "agent_version": "0.25.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1049,7 +1068,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.24.0"
+        state["agent_version"] = "0.25.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1136,6 +1155,8 @@ class CustomerServiceAgent:
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Classify, retrieve vectors, generate a grounded answer, and cite hits."""
 
+        memory_request = request
+        request, memory_used = self._memory_store.enrich_request(request)
         self._message_count_by_session[request.session_id] = (
             self._message_count_by_session.get(request.session_id, 0) + 1
         )
@@ -1162,6 +1183,8 @@ class CustomerServiceAgent:
                 hooks,
                 route_plan,
                 planner_trace,
+                memory_request,
+                memory_used,
             )
         if route_plan.execution_route == "tool_rag":
             return self._finalize_with_hooks(
@@ -1175,6 +1198,8 @@ class CustomerServiceAgent:
                 hooks,
                 route_plan,
                 planner_trace,
+                memory_request,
+                memory_used,
             )
         if route_plan.execution_route == "tool":
             return self._finalize_with_hooks(
@@ -1188,6 +1213,8 @@ class CustomerServiceAgent:
                 hooks,
                 route_plan,
                 planner_trace,
+                memory_request,
+                memory_used,
             )
 
         rewrite = rewrite_retrieval_query(
@@ -1372,7 +1399,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.24.0",
+            "agent_version": "0.25.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1498,6 +1525,8 @@ class CustomerServiceAgent:
             hooks,
             route_plan,
             planner_trace,
+            memory_request,
+            memory_used,
         )
 
     def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:
