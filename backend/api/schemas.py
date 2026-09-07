@@ -73,6 +73,15 @@ RetrievalScene = Literal[
     "complaint",
     "unknown",
 ]
+SourceType = Literal[
+    "user_message",
+    "runtime_context",
+    "session_memory",
+    "tool_observation",
+    "rag_snippet",
+    "workflow_state",
+]
+TrustLevel = Literal["trusted", "verified", "session", "external", "untrusted"]
 
 
 class ChatRequest(BaseModel):
@@ -605,6 +614,28 @@ class RuntimeContextView(BaseModel):
     permission_decision: dict[str, Any] = Field(default_factory=dict)
 
 
+class ContextItem(BaseModel):
+    """One context source with an explicit trust and model-visibility decision."""
+
+    item_id: str
+    source_type: SourceType
+    trust_level: TrustLevel
+    content: str
+    facts: dict[str, Any] = Field(default_factory=dict)
+    allowed_for_model: bool = True
+    conflict_group: str | None = None
+    decision: str
+
+
+class ContextBuildReport(BaseModel):
+    """Auditable context selection ordered by source trust."""
+
+    selected_items: list[ContextItem] = Field(default_factory=list)
+    model_context: list[str] = Field(default_factory=list)
+    conflict_resolutions: list[str] = Field(default_factory=list)
+    excluded_items: list[ContextItem] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
@@ -630,6 +661,7 @@ class ChatResponse(BaseModel):
     runtime_context_view: RuntimeContextView = Field(
         default_factory=RuntimeContextView
     )
+    context_report: ContextBuildReport = Field(default_factory=ContextBuildReport)
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
     needs_human_approval: bool = False
@@ -749,6 +781,14 @@ RagQualitySummary.model_rebuild(
 MemoryDecision.model_rebuild(_types_namespace={"Any": Any, "Literal": Literal})
 SessionMemorySnapshot.model_rebuild(_types_namespace={"Intent": Intent})
 RuntimeContextView.model_rebuild(_types_namespace={"Any": Any})
+ContextItem.model_rebuild(
+    _types_namespace={
+        "Any": Any,
+        "SourceType": SourceType,
+        "TrustLevel": TrustLevel,
+    }
+)
+ContextBuildReport.model_rebuild(_types_namespace={"ContextItem": ContextItem})
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
@@ -771,5 +811,6 @@ ChatResponse.model_rebuild(
         "MemoryDecision": MemoryDecision,
         "SessionMemorySnapshot": SessionMemorySnapshot,
         "RuntimeContextView": RuntimeContextView,
+        "ContextBuildReport": ContextBuildReport,
     }
 )

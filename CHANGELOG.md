@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.27.0
+
+- 新增多来源 Context Builder，统一组织用户消息、Runtime Context、Session Memory、Tool Observation、RAG citations 和 Workflow State；
+- 新增 `ContextItem` 与 `ContextBuildReport` 契约，公开来源、信任级别、模型可见性、冲突组和选择理由；
+- 上下文按 trusted、verified、session、external、untrusted 排序，避免不同可信度事实被扁平拼接；
+- 页面 Runtime Context 与 Session Memory 冲突时采用页面线索，并继续通过业务工具重新校验；
+- 用户自称会员身份不能覆盖 Runtime Context，历史退款批准说法不能覆盖 Workflow State；
+- 系统身份和权限信号作为排除项保留审计说明，不暴露原始 Runtime 用户 ID；
+- Workflow 上下文只暴露安全状态摘要，不复制恢复令牌、幂等键或冻结字段；
+- 顶层新增 `context_report`，并同步写入 `session_state.context_builder`；
+- 保持现有 Hybrid RAG、Tool Calling、Session Memory、LangGraph、HITL 和幂等恢复能力；
+- FastAPI 应用与健康检查版本同步升级到 `0.27.0`。
+
 ## 0.26.0
 
 - 新增结构化 `RuntimeContextView`，拆分模型可见低风险字段与后端系统校验信号；

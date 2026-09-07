@@ -20,6 +20,7 @@ from api.schemas import (
     PlannerTrace,
     RoutePlan,
     RuntimeContextView,
+    SessionMemorySnapshot,
 )
 from config.settings import (
     CANDIDATE_K,
@@ -33,6 +34,7 @@ from context.runtime_context import (
     build_member_context_answer,
     build_runtime_context_view,
 )
+from context.context_builder import ContextBuilder
 from cost.observer import build_cost_summary
 from degradation.fallbacks import (
     degradation_from_tool_records,
@@ -485,6 +487,7 @@ class CustomerServiceAgent:
         memory_request: ChatRequest,
         memory_used: bool,
         runtime_context_view: RuntimeContextView,
+        memory_before: SessionMemorySnapshot,
     ) -> ChatResponse:
         """Attach one bounded lifecycle summary to every public response path."""
 
@@ -519,8 +522,17 @@ class CustomerServiceAgent:
             runtime_context_view,
             response.tool_calls,
         )
-        state["agent_version"] = "0.26.0"
+        context_report = ContextBuilder().build(
+            request=memory_request,
+            runtime=runtime_context_view,
+            memory=memory_before,
+            tool_calls=response.tool_calls,
+            citations=response.citations,
+            workflow=response.workflow,
+        )
+        state["agent_version"] = "0.27.0"
         state["runtime_context"] = runtime_context_view.model_dump()
+        state["context_builder"] = context_report.model_dump()
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -539,8 +551,7 @@ class CustomerServiceAgent:
             "long_term_profile": False,
         }
         state["next_gap"] = (
-            "可信 Runtime Context 已与用户文本分离；下一步统一编排历史消息、"
-            "Memory、Tool Observation 与 RAG 片段。"
+            "多来源上下文已按来源和信任级别组织；下一步处理长上下文压缩与窗口选择。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -552,6 +563,7 @@ class CustomerServiceAgent:
                     f"required_tools={route_plan.required_tools}。"
                 ),
                 planner_trace.public_reason,
+                "Context Builder 按来源和可信度组织本轮上下文，用户文本不能覆盖工具、Runtime Context 或 Workflow State。",
             ]
         )
         return response.model_copy(
@@ -564,6 +576,7 @@ class CustomerServiceAgent:
                 "memory_update": memory_update,
                 "memory_snapshot": memory_snapshot,
                 "runtime_context_view": runtime_context_view,
+                "context_report": context_report,
                 "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
@@ -735,7 +748,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.26.0",
+                "agent_version": "0.27.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -900,7 +913,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.26.0",
+                "agent_version": "0.27.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1087,7 +1100,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.26.0"
+        state["agent_version"] = "0.27.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1176,6 +1189,7 @@ class CustomerServiceAgent:
 
         memory_request = request
         runtime_context_view = build_runtime_context_view(memory_request)
+        memory_before = self._memory_store.snapshot(memory_request)
         request, memory_used = self._memory_store.enrich_request(request)
         self._message_count_by_session[request.session_id] = (
             self._message_count_by_session.get(request.session_id, 0) + 1
@@ -1206,6 +1220,7 @@ class CustomerServiceAgent:
                 memory_request,
                 memory_used,
                 runtime_context_view,
+                memory_before,
             )
         if route_plan.execution_route == "tool_rag":
             return self._finalize_with_hooks(
@@ -1222,6 +1237,7 @@ class CustomerServiceAgent:
                 memory_request,
                 memory_used,
                 runtime_context_view,
+                memory_before,
             )
         if route_plan.execution_route == "tool":
             return self._finalize_with_hooks(
@@ -1238,6 +1254,7 @@ class CustomerServiceAgent:
                 memory_request,
                 memory_used,
                 runtime_context_view,
+                memory_before,
             )
 
         rewrite = rewrite_retrieval_query(
@@ -1426,7 +1443,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.26.0",
+            "agent_version": "0.27.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1555,6 +1572,7 @@ class CustomerServiceAgent:
             memory_request,
             memory_used,
             runtime_context_view,
+            memory_before,
         )
 
     def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:

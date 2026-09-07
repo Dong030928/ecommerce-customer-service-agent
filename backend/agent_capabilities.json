@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.26.0-runtime-context",
-    "title": "Trusted Runtime Context",
-    "summary": "将昵称、会员等级和页面线索与后端身份、风险等级及权限拆成双通道，并阻止用户文本覆盖可信登录态。"
+    "id": "v0.27.0-context-builder",
+    "title": "Context Builder",
+    "summary": "为用户消息、Runtime Context、Session Memory、Tool Observation、RAG 片段和 Workflow State 标注来源、信任级别与冲突处理结果。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.26.0"
+    "version": "0.27.0"
   },
   "endpoints": {
     "health": true,
@@ -119,7 +119,12 @@
     "memory_user_isolation": true,
     "memory_raw_messages": false,
     "long_term_memory": false,
-    "context_builder": false,
+    "context_builder": true,
+    "context_source_tagging": true,
+    "context_trust_level": true,
+    "context_model_visibility": true,
+    "context_conflict_resolution": true,
+    "context_workflow_boundary": true,
     "context_compression": false,
     "prompt_injection_defense": false,
     "hooks": true,
@@ -146,7 +151,6 @@
     "reviewer_identity_authentication": "当前只校验受信网关应传入的审批人和角色字段，尚未接入独立认证与 RBAC 服务。",
     "external_business_write": "审批通过后只记录课程阶段的进程内售后申请，不调用真实退款或退货写接口。",
     "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
-    "context_builder": "上下文来源编排与冲突处理将在后续版本接入。",
     "context_compression": "上下文压缩与 Sliding Window 将在后续版本接入。",
     "prompt_injection_defense": "外部文本隔离与完整 Prompt Injection 防护将在后续版本接入。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
