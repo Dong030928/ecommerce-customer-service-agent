@@ -13,6 +13,7 @@ RouteSource = Literal["rules", "classifier", "rules_fallback"]
 ExecutionRoute = Literal["general", "rag", "tool", "tool_rag", "workflow"]
 Intent = Literal[
     "general_chat",
+    "member_query",
     "promotion_consult",
     "product_consult",
     "order_query",
@@ -595,6 +596,15 @@ class SessionMemorySnapshot(BaseModel):
     ttl_policy: str = "仅在当前 session 与可信用户范围内保留；不写长期用户画像。"
 
 
+class RuntimeContextView(BaseModel):
+    """Split trusted model context from fields reserved for backend checks."""
+
+    trusted_for_model: dict[str, Any] = Field(default_factory=dict)
+    system_only: dict[str, Any] = Field(default_factory=dict)
+    conflict_notes: list[str] = Field(default_factory=list)
+    permission_decision: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
@@ -616,6 +626,9 @@ class ChatResponse(BaseModel):
     memory_update: list[MemoryDecision] = Field(default_factory=list)
     memory_snapshot: SessionMemorySnapshot = Field(
         default_factory=SessionMemorySnapshot
+    )
+    runtime_context_view: RuntimeContextView = Field(
+        default_factory=RuntimeContextView
     )
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
@@ -735,6 +748,7 @@ RagQualitySummary.model_rebuild(
 )
 MemoryDecision.model_rebuild(_types_namespace={"Any": Any, "Literal": Literal})
 SessionMemorySnapshot.model_rebuild(_types_namespace={"Intent": Intent})
+RuntimeContextView.model_rebuild(_types_namespace={"Any": Any})
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
@@ -756,5 +770,6 @@ ChatResponse.model_rebuild(
         "ApprovalRequest": ApprovalRequest,
         "MemoryDecision": MemoryDecision,
         "SessionMemorySnapshot": SessionMemorySnapshot,
+        "RuntimeContextView": RuntimeContextView,
     }
 )

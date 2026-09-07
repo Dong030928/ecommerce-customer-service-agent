@@ -201,7 +201,7 @@ class TaskPlanner:
                 entity_refs=self._entity_refs(message),
             )
 
-        needs_rag = intent not in {"general_chat", "unknown"}
+        needs_rag = intent not in {"general_chat", "member_query", "unknown"}
         return self._route_plan(
             intent=intent,
             execution_route="rag" if needs_rag else "general",

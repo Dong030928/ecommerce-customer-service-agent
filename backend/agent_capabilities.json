@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.25.0-session-memory",
-    "title": "Session Memory",
-    "summary": "新增按会话与可信用户隔离的短期记忆，只保存已验证订单、商品、最近意图和低风险偏好。"
+    "id": "v0.26.0-runtime-context",
+    "title": "Trusted Runtime Context",
+    "summary": "将昵称、会员等级和页面线索与后端身份、风险等级及权限拆成双通道，并阻止用户文本覆盖可信登录态。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.25.0"
+    "version": "0.26.0"
   },
   "endpoints": {
     "health": true,
@@ -19,6 +19,11 @@
   "features": {
     "chat": true,
     "runtime_context": true,
+    "runtime_context_dual_channel": true,
+    "runtime_context_conflict_detection": true,
+    "runtime_permission_decision": true,
+    "trusted_membership": true,
+    "runtime_context_raw_user_id_exposed": false,
     "reasoning_summary": true,
     "reasoning_content": false,
     "real_llm_answer": true,

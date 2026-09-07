@@ -19,6 +19,7 @@ from api.schemas import (
     KnowledgeHit,
     PlannerTrace,
     RoutePlan,
+    RuntimeContextView,
 )
 from config.settings import (
     CANDIDATE_K,
@@ -26,6 +27,11 @@ from config.settings import (
     HYBRID_CANDIDATE_K,
     LOW_CONFIDENCE_THRESHOLD,
     RETRIEVAL_SCORE_THRESHOLD,
+)
+from context.runtime_context import (
+    apply_permission_decision,
+    build_member_context_answer,
+    build_runtime_context_view,
 )
 from cost.observer import build_cost_summary
 from degradation.fallbacks import (
@@ -78,6 +84,11 @@ def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
 
 
 INTENT_RULES: list[tuple[Intent, list[str], str]] = [
+    (
+        "member_query",
+        ["会员等级", "VIP", "我是黑卡", "尊贵会员"],
+        "用户在查询或声明会员身份，必须以可信 Runtime Context 为准。",
+    ),
     (
         "complaint",
         ["投诉", "举报", "赔偿", "曝光", "315", "别踢皮球"],
@@ -341,6 +352,7 @@ def build_answer(intent_result: IntentResult) -> str:
         "order_query": "我已经识别到订单或物流查询，但实时状态需要订单工具，不能根据知识库编造物流节点。",
         "promotion_consult": "我已经识别到优惠活动咨询，但当前没有检索到可核验规则，暂时不能承诺具体优惠。",
         "product_consult": "我已经识别到商品咨询，但当前没有检索到可核验资料，暂时不能编造商品卖点。",
+        "member_query": "会员身份和权益必须以可信 Runtime Context 中的登录态为准。",
         "general_chat": "你好，我是电商平台 AI 客服，可以协助解答商品、活动、订单和售后相关问题。",
         "unknown": "我还不能确定这条消息属于哪类客服问题，请补充商品、订单或售后诉求。",
     }
@@ -472,6 +484,7 @@ class CustomerServiceAgent:
         planner_trace: PlannerTrace,
         memory_request: ChatRequest,
         memory_used: bool,
+        runtime_context_view: RuntimeContextView,
     ) -> ChatResponse:
         """Attach one bounded lifecycle summary to every public response path."""
 
@@ -502,7 +515,12 @@ class CustomerServiceAgent:
             intent=response.intent,
             tool_calls=response.tool_calls,
         )
-        state["agent_version"] = "0.25.0"
+        runtime_context_view = apply_permission_decision(
+            runtime_context_view,
+            response.tool_calls,
+        )
+        state["agent_version"] = "0.26.0"
+        state["runtime_context"] = runtime_context_view.model_dump()
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -521,8 +539,8 @@ class CustomerServiceAgent:
             "long_term_profile": False,
         }
         state["next_gap"] = (
-            "已支持有边界的短期 Session Memory；下一步继续治理上下文来源、"
-            "冲突和压缩。"
+            "可信 Runtime Context 已与用户文本分离；下一步统一编排历史消息、"
+            "Memory、Tool Observation 与 RAG 片段。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -545,6 +563,7 @@ class CustomerServiceAgent:
                 "planner_trace": planner_trace,
                 "memory_update": memory_update,
                 "memory_snapshot": memory_snapshot,
+                "runtime_context_view": runtime_context_view,
                 "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
@@ -716,7 +735,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.25.0",
+                "agent_version": "0.26.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -881,7 +900,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.25.0",
+                "agent_version": "0.26.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1068,7 +1087,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.25.0"
+        state["agent_version"] = "0.26.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1156,6 +1175,7 @@ class CustomerServiceAgent:
         """Classify, retrieve vectors, generate a grounded answer, and cite hits."""
 
         memory_request = request
+        runtime_context_view = build_runtime_context_view(memory_request)
         request, memory_used = self._memory_store.enrich_request(request)
         self._message_count_by_session[request.session_id] = (
             self._message_count_by_session.get(request.session_id, 0) + 1
@@ -1185,6 +1205,7 @@ class CustomerServiceAgent:
                 planner_trace,
                 memory_request,
                 memory_used,
+                runtime_context_view,
             )
         if route_plan.execution_route == "tool_rag":
             return self._finalize_with_hooks(
@@ -1200,6 +1221,7 @@ class CustomerServiceAgent:
                 planner_trace,
                 memory_request,
                 memory_used,
+                runtime_context_view,
             )
         if route_plan.execution_route == "tool":
             return self._finalize_with_hooks(
@@ -1215,6 +1237,7 @@ class CustomerServiceAgent:
                 planner_trace,
                 memory_request,
                 memory_used,
+                runtime_context_view,
             )
 
         rewrite = rewrite_retrieval_query(
@@ -1299,7 +1322,11 @@ class CustomerServiceAgent:
             reliable_hits,
         )
         if not route_plan.needs_rag:
-            fallback_answer = build_answer(intent_result)
+            fallback_answer = (
+                build_member_context_answer(memory_request, runtime_context_view)
+                if intent_result.intent == "member_query"
+                else build_answer(intent_result)
+            )
         elif realtime_gap:
             fallback_answer = build_realtime_business_gap_answer()
         elif reliable_hits:
@@ -1399,7 +1426,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.25.0",
+            "agent_version": "0.26.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1527,6 +1554,7 @@ class CustomerServiceAgent:
             planner_trace,
             memory_request,
             memory_used,
+            runtime_context_view,
         )
 
     def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:

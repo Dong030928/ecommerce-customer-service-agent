@@ -2,13 +2,17 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.25.0
+## v0.26.0
 
 当前版本提供：
 
 - FastAPI 服务与 `POST /chat`；
 - OpenAI-compatible 聊天模型调用；
 - `session_id` 和可信 Runtime Context 接入；
+- 将 Runtime Context 拆分为低风险的 `trusted_for_model` 与后端校验专用的 `system_only` 视图；
+- 会员等级、账号风险和工具权限只接受可信调用方字段，聊天里的 VIP 或其他用户身份自称不能覆盖登录态；
+- `conflict_notes` 公开身份/会员自称冲突，`permission_decision` 公开订单工具是否完成可信身份校验；
+- 公开 Runtime Context 不返回原始用户 ID，也不展开当前用户订单、手机号或地址；
 - 受控的电商客服身份与业务事实边界；
 - 规则优先、轻量分类模型兜底的结构化意图识别；
 - 稳定的 `intent_result`（意图、来源、置信度、命中词和说明）；
@@ -118,7 +122,7 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前入口先用 Session Memory 对“刚才那个订单”做受控消歧，再执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook，并按明确写入策略更新 Session Memory。Runtime Context 不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult、聊天原文和隐藏推理链不进入记忆或公开响应。
+当前入口先构造可信 Runtime Context 双通道，再用 Session Memory 对“刚才那个订单”做受控消歧，并执行“确定性安全规则 → 低置信规划模型 → 候选字段与工具白名单约束”，形成单一 RoutePlan。稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → Grounded Answer/Citations”；实时事实进入“MCP-style Catalog → ClarificationPlan → pre-tool Hook → 受 RoutePlan 收窄的 LangChain Tool Use → ToolResult → post-tool/error Hook → Observation”；混合问题同时执行 Tool + RAG。高风险写请求进入 LangGraph Action Boundary，按固定节点读取订单、物流和售后政策证据，完成资格判断后停在提交之前。每条路由结束时都生成 completion Hook、权限结论并按明确策略更新 Session Memory。原始用户身份不进入规划模型、Embedding、缓存键、Reranker 或联合回答 Prompt；原始 ToolResult、聊天原文和隐藏推理链不进入记忆或公开响应。
 
 关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引、缓存、checkpoint、Session Memory 和模拟售后申请记录均为进程内实现，不是独立数据库或分布式状态服务。当前 Memory 不是长期用户画像，也没有完整 Context Builder、上下文压缩和持久化；TaskPlanner 只生成入口 RoutePlan，不生成长执行计划；业务工具仍只支持只读查询。高风险请求已接入 LangGraph、HITL 恢复和幂等记录，但审批人字段仍依赖受信网关注入，尚未接入独立认证/RBAC、持久化 checkpoint、真实业务写入或远程 MCP Server 连接。
 
@@ -129,6 +133,7 @@ backend/
   agents/       # Agent 编排
   api/          # HTTP 路由与请求响应契约
   config/       # 环境变量与能力清单
+  context/      # Runtime Context 双通道、冲突识别与公开权限结论
   cost/         # Token usage 解析与估算成本
   degradation/  # 错误分类、有限重试决策、高风险边界与安全降级模板
   knowledge/    # 活动、售后、商品、订单等 Markdown 知识原文

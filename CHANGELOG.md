@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.0
+
+- 新增结构化 `RuntimeContextView`，拆分模型可见低风险字段与后端系统校验信号；
+- 可信 Runtime Context 提供登录状态、会员等级、账号风险、页面摘要和权限列表；
+- 用户在聊天中自称 VIP 或其他用户身份时生成冲突提示，但不能覆盖可信登录态；
+- 新增确定性会员咨询路由，会员回答只采用 Runtime Context 的系统等级；
+- 订单工具执行后生成公开 `permission_decision`，明确是否完成可信身份绑定及业务放行；
+- 公开上下文不返回原始用户 ID、完整订单列表、手机号或地址；
+- Session Memory 继续只辅助消歧，不能证明身份、订单归属或替代 HITL 恢复校验；
+- 保持现有 Hybrid RAG、Tool Calling、LangGraph、checkpoint 与幂等能力；
+- FastAPI 应用与健康检查版本同步升级到 `0.26.0`。
+
 ## 0.25.0
 
 - 新增进程内 Session Memory，记录最近订单、最近商品、最近意图和少量低风险偏好；
