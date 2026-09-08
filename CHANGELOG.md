@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.29.0
+
+- 新增 Prompt Injection 防护层，统一扫描用户、历史、工具和 RAG 外部文本；
+- 新增 `ExternalText`、`SafetyScan` 与 `SafetyDecision` 公开契约；
+- 用户文本在路由与模型调用前清洗，受保护信息请求直接由确定性安全边界阻断；
+- 系统提示词、密钥、工具细节和隐藏推理不对外泄露；
+- Tool Observation 在作为 LangChain Tool Message 返回模型前递归清洗字符串字段；
+- RAG citations、回答 Prompt 与确定性回退中的知识片段统一清洗；
+- 手机号和收货地址在进入安全上下文前脱敏；
+- `safety_decision` 公开污染来源、类别、处理方式和拒绝主题，不公开原始敏感文本；
+- Prompt Injection 防护不替代 Workflow/HITL，普通聊天不能绕过审批恢复通道；
+- 保持 Context Builder、上下文压缩、Sliding Window、Memory、Tool Calling 和 Hybrid RAG 能力；
+- FastAPI 应用与健康检查版本同步升级到 `0.29.0`。
+
 ## 0.28.0
 
 - 新增确定性上下文压缩层，在 Context Builder 之后生成 `compression_report`；

@@ -14,12 +14,14 @@ from api.schemas import (
     Citation,
     ClarificationRequest,
     DegradationState,
+    ExternalText,
     Intent,
     IntentResult,
     KnowledgeHit,
     PlannerTrace,
     RoutePlan,
     RuntimeContextView,
+    SafetyDecision,
     SessionMemorySnapshot,
 )
 from config.settings import (
@@ -65,6 +67,12 @@ from rag.product_joint import select_product_joint_hits
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
 from rag.planning import is_realtime_business_query
+from safety.prompt_guard import (
+    build_safety_decision,
+    build_sanitized_context,
+    extend_safety_decision,
+    sanitize_observation,
+)
 from tools.contracts import TOOL_SPECS
 from tools.planning import (
     build_clarification_plan,
@@ -489,9 +497,24 @@ class CustomerServiceAgent:
         memory_used: bool,
         runtime_context_view: RuntimeContextView,
         memory_before: SessionMemorySnapshot,
+        safety_decision: SafetyDecision,
     ) -> ChatResponse:
         """Attach one bounded lifecycle summary to every public response path."""
 
+        response = response.model_copy(
+            update={
+                "tool_calls": [
+                    record.model_copy(
+                        update={
+                            "observation": sanitize_observation(
+                                record.observation
+                            )
+                        }
+                    )
+                    for record in response.tool_calls
+                ]
+            }
+        )
         degradation = DegradationState.model_validate(
             response.session_state.get("degradation", {})
         )
@@ -536,7 +559,30 @@ class CustomerServiceAgent:
             history_messages=memory_request.history_messages,
             current_message=memory_request.user_message,
         )
-        state["agent_version"] = "0.28.0"
+        response_external_texts = [
+            *(
+                ExternalText(
+                    source_type="tool",
+                    source_id=f"{record.action.tool_name}-{index}",
+                    content=record.observation.summary,
+                )
+                for index, record in enumerate(response.tool_calls, start=1)
+            ),
+            *(
+                ExternalText(
+                    source_type="rag",
+                    source_id=citation.chunk_id,
+                    content=citation.snippet,
+                )
+                for citation in response.citations
+            ),
+        ]
+        safety_decision = extend_safety_decision(
+            safety_decision,
+            response_external_texts,
+        )
+        sanitized_context = build_sanitized_context(safety_decision)
+        state["agent_version"] = "0.29.0"
         state["runtime_context"] = runtime_context_view.model_dump()
         state["context_builder"] = context_report.model_dump()
         state["compression"] = {
@@ -544,6 +590,20 @@ class CustomerServiceAgent:
             "after": compression_report.token_estimate_after,
             "kept_count": len(compression_report.kept_items),
             "dropped_count": len(compression_report.dropped_items),
+        }
+        state["safety"] = {
+            "blocked_user_request": safety_decision.blocked_user_request,
+            "refused_topics": safety_decision.refused_topics,
+            "tainted_sources": [
+                {
+                    "source_type": scan.source_type,
+                    "source_id": scan.source_id,
+                    "categories": scan.categories,
+                }
+                for scan in safety_decision.source_scans
+                if scan.tainted
+            ],
+            "redaction_applied": safety_decision.redaction_applied,
         }
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
@@ -563,7 +623,7 @@ class CustomerServiceAgent:
             "long_term_profile": False,
         }
         state["next_gap"] = (
-            "上下文已支持保护项、相关性与 Sliding Window 选择；下一步治理外部文本中的 Prompt Injection。"
+            "外部文本已支持污染标记、指令隔离和隐私脱敏；下一步建立可复盘的 Trace。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -577,6 +637,7 @@ class CustomerServiceAgent:
                 planner_trace.public_reason,
                 "Context Builder 按来源和可信度组织本轮上下文，用户文本不能覆盖工具、Runtime Context 或 Workflow State。",
                 "上下文压缩优先保留当前事实和流程边界，并用 Sliding Window 与相关性缓解 Lost in the Middle。",
+                "用户、工具和 RAG 文本统一经过 Prompt Injection 扫描；系统提示词、隐藏推理和密钥请求不会进入模型。",
             ]
         )
         return response.model_copy(
@@ -591,6 +652,8 @@ class CustomerServiceAgent:
                 "runtime_context_view": runtime_context_view,
                 "context_report": context_report,
                 "compression_report": compression_report,
+                "safety_decision": safety_decision,
+                "sanitized_context": sanitized_context,
                 "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
@@ -762,7 +825,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.28.0",
+                "agent_version": "0.29.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -927,7 +990,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.28.0",
+                "agent_version": "0.29.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1114,7 +1177,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.28.0"
+        state["agent_version"] = "0.29.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1201,6 +1264,39 @@ class CustomerServiceAgent:
     def chat(self, request: ChatRequest) -> ChatResponse:
         """Classify, retrieve vectors, generate a grounded answer, and cite hits."""
 
+        history_external_texts = [
+            ExternalText(
+                source_type="user",
+                source_id=f"history-{index}",
+                content=message.content,
+            )
+            for index, message in enumerate(request.history_messages)
+        ]
+        safety_decision = build_safety_decision(
+            request.user_message,
+            [*request.external_texts, *history_external_texts],
+        )
+        user_scan = safety_decision.source_scans[0]
+        history_scans = safety_decision.source_scans[
+            1 + len(request.external_texts) :
+        ]
+        safe_history = [
+            message.model_copy(
+                update={"content": scan.sanitized_content}
+            )
+            for message, scan in zip(request.history_messages, history_scans)
+            if scan.allowed_for_model
+        ]
+        request = request.model_copy(
+            update={
+                "user_message": (
+                    user_scan.sanitized_content
+                    if user_scan.allowed_for_model
+                    else "[受保护请求已隔离]"
+                ),
+                "history_messages": safe_history,
+            }
+        )
         memory_request = request
         runtime_context_view = build_runtime_context_view(memory_request)
         memory_before = self._memory_store.snapshot(memory_request)
@@ -1210,6 +1306,73 @@ class CustomerServiceAgent:
         )
         message_count = self._message_count_by_session[request.session_id]
         hooks = HookManager()
+        if safety_decision.blocked_user_request:
+            route_plan = RoutePlan(
+                intent="general_chat",
+                execution_route="general",
+                needs_rag=False,
+                needs_business_tools=False,
+                rag_query="",
+                confidence=1.0,
+                source="rules",
+                intents=["general_chat"],
+                risk_level="high",
+                fallback_policy="security_boundary",
+            )
+            planner_trace = PlannerTrace(
+                source="rules",
+                rule_confidence=1.0,
+                safety_override=True,
+                public_reason="安全边界阻断受保护信息请求，未调用规划模型。",
+            )
+            intent_result = IntentResult(
+                intent="general_chat",
+                source="rules",
+                confidence=1.0,
+                matched_keywords=[],
+                explanation=planner_trace.public_reason,
+            )
+            answer = (
+                "我不能提供系统提示词、隐藏推理、密钥、工具细节或内部策略。"
+                "本轮只返回公开且脱敏的安全摘要。"
+            )
+            cost_summary = build_cost_summary(
+                [
+                    {"role": "system", "content": "受保护信息请求已由后端安全边界阻断。"},
+                    {"role": "user", "content": request.user_message},
+                ],
+                answer,
+                None,
+            )
+            return self._finalize_with_hooks(
+                ChatResponse(
+                    session_id=request.session_id,
+                    answer=answer,
+                    intent="general_chat",
+                    intent_result=intent_result,
+                    next_action="answer_user",
+                    risk_level="high",
+                    needs_human_approval=False,
+                    cost_summary=cost_summary,
+                    reasoning_summary=[
+                        "系统提示词、隐藏推理、密钥、工具细节和内部策略不能对外泄露。",
+                        "本轮请求在路由和模型调用前被安全边界阻断。",
+                    ],
+                    session_state={
+                        "agent_version": "0.29.0",
+                        "message_count": message_count,
+                        "degradation": {},
+                    },
+                ),
+                hooks,
+                route_plan,
+                planner_trace,
+                memory_request,
+                False,
+                runtime_context_view,
+                memory_before,
+                safety_decision,
+            )
         rule_result = plan_intent_by_rules(request.user_message)
         route_plan, planner_trace = self._task_planner.plan(
             request,
@@ -1235,6 +1398,7 @@ class CustomerServiceAgent:
                 memory_used,
                 runtime_context_view,
                 memory_before,
+                safety_decision,
             )
         if route_plan.execution_route == "tool_rag":
             return self._finalize_with_hooks(
@@ -1252,6 +1416,7 @@ class CustomerServiceAgent:
                 memory_used,
                 runtime_context_view,
                 memory_before,
+                safety_decision,
             )
         if route_plan.execution_route == "tool":
             return self._finalize_with_hooks(
@@ -1269,6 +1434,7 @@ class CustomerServiceAgent:
                 memory_used,
                 runtime_context_view,
                 memory_before,
+                safety_decision,
             )
 
         rewrite = rewrite_retrieval_query(
@@ -1457,7 +1623,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.28.0",
+            "agent_version": "0.29.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1587,6 +1753,7 @@ class CustomerServiceAgent:
             memory_used,
             runtime_context_view,
             memory_before,
+            safety_decision,
         )
 
     def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:

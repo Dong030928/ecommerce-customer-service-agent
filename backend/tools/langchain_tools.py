@@ -6,6 +6,7 @@ from typing import Any
 
 from api.schemas import ChatRequest, ToolAction
 from hooks.manager import HookManager
+from safety.prompt_guard import sanitize_observation
 from tools.contracts import TOOL_SPECS
 from tools.tool_runtime import ToolRuntime
 
@@ -41,6 +42,7 @@ def build_langchain_tools(
             request,
             hooks,
         )
+        observation = sanitize_observation(observation)
         return observation.model_dump_json()
 
     def get_order_status(order_id: str) -> str:

@@ -9,6 +9,7 @@ from api.schemas import (
     QueryRewrite,
     ToolObservation,
 )
+from safety.prompt_guard import sanitize_text
 
 
 def build_citations(hits: list[KnowledgeHit]) -> list[Citation]:
@@ -22,7 +23,7 @@ def build_citations(hits: list[KnowledgeHit]) -> list[Citation]:
             section=hit.chunk.section,
             chunk_id=hit.chunk.chunk_id,
             score=hit.score,
-            snippet=hit.chunk.text,
+            snippet=sanitize_text(hit.chunk.text)[0],
         )
         for index, hit in enumerate(hits, start=1)
     ]
@@ -39,7 +40,7 @@ def render_rag_messages(
     evidence = "\n\n".join(
         f"[{index}] {hit.chunk.document_title} / {hit.chunk.section}\n"
         f"chunk_id={hit.chunk.chunk_id} score={hit.score} "
-        f"reasons={','.join(hit.rerank_reasons)}\n{hit.chunk.text}"
+        f"reasons={','.join(hit.rerank_reasons)}\n{sanitize_text(hit.chunk.text)[0]}"
         for index, hit in enumerate(hits, start=1)
     )
     system_content = (
@@ -73,7 +74,7 @@ def render_product_tool_rag_messages(
     )
     rag_evidence = "\n\n".join(
         f"[C{index}] {hit.chunk.document_title} / {hit.chunk.section}\n"
-        f"chunk_id={hit.chunk.chunk_id} score={hit.score}\n{hit.chunk.text}"
+        f"chunk_id={hit.chunk.chunk_id} score={hit.score}\n{sanitize_text(hit.chunk.text)[0]}"
         for index, hit in enumerate(hits, start=1)
     )
     return [
@@ -111,7 +112,7 @@ def build_product_tool_rag_fallback(
     answer = "实时商品信息：" + " ".join(tool_lines)
     if hits:
         knowledge_lines = [
-            f"[C{index}] {hit.chunk.text}"
+            f"[C{index}] {sanitize_text(hit.chunk.text)[0]}"
             for index, hit in enumerate(hits, start=1)
         ]
         answer += " 知识库依据：" + " ".join(knowledge_lines)

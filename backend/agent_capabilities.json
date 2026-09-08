@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.28.0-context-compression",
-    "title": "Context Compression and Sliding Window",
-    "summary": "在多来源 Context Builder 之后按保护项、最近窗口和相关性选择上下文，并将旧低相关历史压缩为公开摘要。"
+    "id": "v0.29.0-prompt-injection-defense",
+    "title": "Prompt Injection Defense",
+    "summary": "统一扫描用户、工具和 RAG 外部文本，标记污染、隔离越权指令、脱敏隐私，并阻断系统提示词、密钥和隐藏推理泄露请求。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.28.0"
+    "version": "0.29.0"
   },
   "endpoints": {
     "health": true,
@@ -131,7 +131,16 @@
     "sliding_window": true,
     "lost_in_middle_guard": true,
     "compressed_history_summary": true,
-    "prompt_injection_defense": false,
+    "prompt_injection_defense": true,
+    "external_text_scanning": true,
+    "taint_marking": true,
+    "instruction_isolation": true,
+    "privacy_redaction": true,
+    "secret_request_blocking": true,
+    "public_safety_summary": true,
+    "pre_planner_security_guard": true,
+    "tool_observation_sanitization": true,
+    "rag_snippet_sanitization": true,
     "hooks": true,
     "pre_tool_call_hook": true,
     "post_tool_call_hook": true,
@@ -156,7 +165,6 @@
     "reviewer_identity_authentication": "当前只校验受信网关应传入的审批人和角色字段，尚未接入独立认证与 RBAC 服务。",
     "external_business_write": "审批通过后只记录课程阶段的进程内售后申请，不调用真实退款或退货写接口。",
     "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
-    "prompt_injection_defense": "外部文本隔离与完整 Prompt Injection 防护将在后续版本接入。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "trace": "Trace 公开轨迹还没有接入。",
     "evaluation": "Evaluation 回归评测将在后续版本接入。"

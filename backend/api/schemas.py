@@ -83,12 +83,21 @@ SourceType = Literal[
     "workflow_state",
 ]
 TrustLevel = Literal["trusted", "verified", "session", "external", "untrusted"]
+ExternalSourceType = Literal["user", "tool", "rag"]
 
 
 class HistoryMessage(BaseModel):
     """One caller-provided conversation turn; its content is always untrusted."""
 
     role: Literal["user", "assistant"]
+    content: str
+
+
+class ExternalText(BaseModel):
+    """Caller- or integration-provided text that must cross the safety boundary."""
+
+    source_type: ExternalSourceType
+    source_id: str
     content: str
 
 
@@ -111,6 +120,10 @@ class ChatRequest(BaseModel):
     history_messages: list[HistoryMessage] = Field(
         default_factory=list,
         description="调用方传入的历史消息，只用于受控窗口选择",
+    )
+    external_texts: list[ExternalText] = Field(
+        default_factory=list,
+        description="需要统一扫描的工具或 RAG 外部文本",
     )
     reasoning_view: ReasoningView = "default"
     debug: bool = True
@@ -676,6 +689,28 @@ class CompressionReport(BaseModel):
     lost_in_middle_guardrails: list[str] = Field(default_factory=list)
 
 
+class SafetyScan(BaseModel):
+    """One taint scan with only sanitized content exposed publicly."""
+
+    source_type: ExternalSourceType
+    source_id: str
+    tainted: bool
+    categories: list[str] = Field(default_factory=list)
+    sanitized_content: str
+    allowed_for_model: bool
+    handling: str
+
+
+class SafetyDecision(BaseModel):
+    """Public Prompt Injection and privacy-redaction decision."""
+
+    blocked_user_request: bool = False
+    refused_topics: list[str] = Field(default_factory=list)
+    source_scans: list[SafetyScan] = Field(default_factory=list)
+    public_summary: list[str] = Field(default_factory=list)
+    redaction_applied: bool = False
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
@@ -703,6 +738,8 @@ class ChatResponse(BaseModel):
     )
     context_report: ContextBuildReport = Field(default_factory=ContextBuildReport)
     compression_report: CompressionReport = Field(default_factory=CompressionReport)
+    safety_decision: SafetyDecision = Field(default_factory=SafetyDecision)
+    sanitized_context: list[str] = Field(default_factory=list)
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
     needs_human_approval: bool = False
@@ -712,7 +749,14 @@ class ChatResponse(BaseModel):
     session_state: dict[str, Any]
 
 
-ChatRequest.model_rebuild(_types_namespace={"Any": Any, "ReasoningView": ReasoningView})
+ChatRequest.model_rebuild(
+    _types_namespace={
+        "Any": Any,
+        "ExternalText": ExternalText,
+        "HistoryMessage": HistoryMessage,
+        "ReasoningView": ReasoningView,
+    }
+)
 IntentResult.model_rebuild(
     _types_namespace={"Intent": Intent, "IntentSource": IntentSource}
 )
@@ -839,6 +883,10 @@ ContextCandidate.model_rebuild(
 CompressionReport.model_rebuild(
     _types_namespace={"ContextCandidate": ContextCandidate}
 )
+SafetyScan.model_rebuild(
+    _types_namespace={"ExternalSourceType": ExternalSourceType}
+)
+SafetyDecision.model_rebuild(_types_namespace={"SafetyScan": SafetyScan})
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
@@ -863,5 +911,6 @@ ChatResponse.model_rebuild(
         "RuntimeContextView": RuntimeContextView,
         "ContextBuildReport": ContextBuildReport,
         "CompressionReport": CompressionReport,
+        "SafetyDecision": SafetyDecision,
     }
 )
