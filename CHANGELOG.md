@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.28.0
+
+- 新增确定性上下文压缩层，在 Context Builder 之后生成 `compression_report`；
+- 新增调用方历史消息契约，并将其始终视为不可信上下文；
+- 当前用户消息、Runtime Context、Tool Observation 和 Workflow State 标记为保护项；
+- 最近 4 条历史消息通过 Sliding Window 保留，不被旧历史挤出窗口；
+- 中间历史命中当前订单号时按 Context Relevance 召回，缓解 Lost in the Middle；
+- RAG 片段按高相关性保留，Session Memory 仍只能辅助消歧；
+- 旧低相关上下文压缩为公开摘要，不直接进入 `model_context` 候选；
+- Workflow checkpoint 继续独立保存在服务端，不依赖压缩摘要恢复；
+- 能力清单新增保护项、相关性、Sliding Window、Lost in the Middle 和历史摘要信号；
+- FastAPI 应用与健康检查版本同步升级到 `0.28.0`。
+
 ## 0.27.0
 
 - 新增多来源 Context Builder，统一组织用户消息、Runtime Context、Session Memory、Tool Observation、RAG citations 和 Workflow State；

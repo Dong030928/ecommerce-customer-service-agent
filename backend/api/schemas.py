@@ -77,11 +77,19 @@ SourceType = Literal[
     "user_message",
     "runtime_context",
     "session_memory",
+    "history_message",
     "tool_observation",
     "rag_snippet",
     "workflow_state",
 ]
 TrustLevel = Literal["trusted", "verified", "session", "external", "untrusted"]
+
+
+class HistoryMessage(BaseModel):
+    """One caller-provided conversation turn; its content is always untrusted."""
+
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class ChatRequest(BaseModel):
@@ -100,6 +108,10 @@ class ChatRequest(BaseModel):
         default=None, description="可信调用方确认的风险等级"
     )
     user_message: str = Field(..., description="用户输入的问题")
+    history_messages: list[HistoryMessage] = Field(
+        default_factory=list,
+        description="调用方传入的历史消息，只用于受控窗口选择",
+    )
     reasoning_view: ReasoningView = "default"
     debug: bool = True
     runtime_context: dict[str, Any] | None = None
@@ -636,6 +648,34 @@ class ContextBuildReport(BaseModel):
     excluded_items: list[ContextItem] = Field(default_factory=list)
 
 
+class ContextCandidate(BaseModel):
+    """One context fragment scored for protection, relevance, and recency."""
+
+    item_id: str
+    source_type: SourceType
+    trust_level: TrustLevel
+    content: str
+    token_estimate: int = Field(ge=0)
+    relevance_score: int = Field(ge=0, le=100)
+    protected: bool = False
+    keep_reason: str | None = None
+
+
+class CompressionReport(BaseModel):
+    """Public-safe result of context compression and window selection."""
+
+    max_context_tokens: int = 0
+    recent_window_size: int = 0
+    input_items: list[ContextCandidate] = Field(default_factory=list)
+    kept_items: list[ContextCandidate] = Field(default_factory=list)
+    model_context: list[str] = Field(default_factory=list)
+    compressed_summary: str = ""
+    dropped_items: list[ContextCandidate] = Field(default_factory=list)
+    token_estimate_before: int = 0
+    token_estimate_after: int = 0
+    lost_in_middle_guardrails: list[str] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
@@ -662,6 +702,7 @@ class ChatResponse(BaseModel):
         default_factory=RuntimeContextView
     )
     context_report: ContextBuildReport = Field(default_factory=ContextBuildReport)
+    compression_report: CompressionReport = Field(default_factory=CompressionReport)
     next_action: NextAction = "answer_user"
     risk_level: RiskLevel = "low"
     needs_human_approval: bool = False
@@ -789,6 +830,15 @@ ContextItem.model_rebuild(
     }
 )
 ContextBuildReport.model_rebuild(_types_namespace={"ContextItem": ContextItem})
+ContextCandidate.model_rebuild(
+    _types_namespace={
+        "SourceType": SourceType,
+        "TrustLevel": TrustLevel,
+    }
+)
+CompressionReport.model_rebuild(
+    _types_namespace={"ContextCandidate": ContextCandidate}
+)
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,
@@ -812,5 +862,6 @@ ChatResponse.model_rebuild(
         "SessionMemorySnapshot": SessionMemorySnapshot,
         "RuntimeContextView": RuntimeContextView,
         "ContextBuildReport": ContextBuildReport,
+        "CompressionReport": CompressionReport,
     }
 )

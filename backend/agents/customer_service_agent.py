@@ -29,12 +29,13 @@ from config.settings import (
     LOW_CONFIDENCE_THRESHOLD,
     RETRIEVAL_SCORE_THRESHOLD,
 )
+from context.compression import ContextCompressor
+from context.context_builder import ContextBuilder
 from context.runtime_context import (
     apply_permission_decision,
     build_member_context_answer,
     build_runtime_context_view,
 )
-from context.context_builder import ContextBuilder
 from cost.observer import build_cost_summary
 from degradation.fallbacks import (
     degradation_from_tool_records,
@@ -530,9 +531,20 @@ class CustomerServiceAgent:
             citations=response.citations,
             workflow=response.workflow,
         )
-        state["agent_version"] = "0.27.0"
+        compression_report = ContextCompressor().compress(
+            context_report,
+            history_messages=memory_request.history_messages,
+            current_message=memory_request.user_message,
+        )
+        state["agent_version"] = "0.28.0"
         state["runtime_context"] = runtime_context_view.model_dump()
         state["context_builder"] = context_report.model_dump()
+        state["compression"] = {
+            "before": compression_report.token_estimate_before,
+            "after": compression_report.token_estimate_after,
+            "kept_count": len(compression_report.kept_items),
+            "dropped_count": len(compression_report.dropped_items),
+        }
         state["route_plan"] = route_plan.model_dump()
         state["planner_trace"] = planner_trace.model_dump()
         state["mcp"] = mcp_context.model_dump()
@@ -551,7 +563,7 @@ class CustomerServiceAgent:
             "long_term_profile": False,
         }
         state["next_gap"] = (
-            "多来源上下文已按来源和信任级别组织；下一步处理长上下文压缩与窗口选择。"
+            "上下文已支持保护项、相关性与 Sliding Window 选择；下一步治理外部文本中的 Prompt Injection。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -564,6 +576,7 @@ class CustomerServiceAgent:
                 ),
                 planner_trace.public_reason,
                 "Context Builder 按来源和可信度组织本轮上下文，用户文本不能覆盖工具、Runtime Context 或 Workflow State。",
+                "上下文压缩优先保留当前事实和流程边界，并用 Sliding Window 与相关性缓解 Lost in the Middle。",
             ]
         )
         return response.model_copy(
@@ -577,6 +590,7 @@ class CustomerServiceAgent:
                 "memory_snapshot": memory_snapshot,
                 "runtime_context_view": runtime_context_view,
                 "context_report": context_report,
+                "compression_report": compression_report,
                 "reasoning_summary": reasoning_summary,
                 "session_state": state,
             }
@@ -748,7 +762,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.27.0",
+                "agent_version": "0.28.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -913,7 +927,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.27.0",
+                "agent_version": "0.28.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1100,7 +1114,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.27.0"
+        state["agent_version"] = "0.28.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1443,7 +1457,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.27.0",
+            "agent_version": "0.28.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
