@@ -1,19 +1,19 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.29.0-prompt-injection-defense",
-    "title": "Prompt Injection Defense",
-    "summary": "统一扫描用户、工具和 RAG 外部文本，标记污染、隔离越权指令、脱敏隐私，并阻断系统提示词、密钥和隐藏推理泄露请求。"
+    "id": "v0.30.0-trace-observability",
+    "title": "Public Trace Observability",
+    "summary": "将 Runtime Context、Context、路由、RAG、工具、Workflow/HITL、Hooks、成本和回答记录为安全的 trace_event_v1 事件。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.29.0"
+    "version": "0.30.0"
   },
   "endpoints": {
     "health": true,
     "chat": true,
     "chat_resume": true,
-    "trace": false,
+    "trace": true,
     "eval_run": false
   },
   "features": {
@@ -153,7 +153,13 @@
     "mcp_prompts": true,
     "mcp_binding_summary": true,
     "remote_mcp_server": false,
-    "trace": false,
+    "trace": true,
+    "trace_event_v1": true,
+    "public_trace_schema": true,
+    "session_trace_endpoint": true,
+    "trace_payload_sanitization": true,
+    "hidden_cot_protection": true,
+    "workflow_resume_trace": true,
     "evaluation": false,
     "cost_summary": true
   },
@@ -166,7 +172,6 @@
     "external_business_write": "审批通过后只记录课程阶段的进程内售后申请，不调用真实退款或退货写接口。",
     "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
-    "trace": "Trace 公开轨迹还没有接入。",
     "evaluation": "Evaluation 回归评测将在后续版本接入。"
   }
 }

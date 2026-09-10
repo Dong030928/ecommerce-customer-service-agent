@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.30.0
+
+- 新增 `trace_event_v1` 公共 Trace 契约和线程安全的进程内 TraceStore；
+- 新增 `GET /sessions/{session_id}/trace` 会话 Trace 查询接口；
+- Trace 覆盖 Runtime Context、Context、RoutePlan、RAG、工具、Workflow/HITL、Hooks、成本和最终回答；
+- 工具调用记录 started/finished 配对事件，不写入原始参数值或 ToolResult；
+- Workflow 暂停与人工审批需求分别记录，`/chat/resume` 记录恢复和审批结果；
+- Trace payload 递归移除系统提示词、隐藏推理、身份、恢复令牌、幂等键、冻结字段和原始工具结果；
+- 手机号、地址和密钥形态在 Trace 写入前统一脱敏；
+- 每条 Trace 明确 `public_trace=true` 与 `hidden_cot_exposed=false`；
+- `/chat` 与 `/chat/resume` 的 `session_state.trace` 返回 Schema、事件数和查询入口；
+- 保持 Prompt Injection、上下文压缩、Memory、Hybrid RAG、Tool Calling 和 Workflow/HITL 能力；
+- FastAPI 应用与健康检查版本同步升级到 `0.30.0`。
+
 ## 0.29.0
 
 - 新增 Prompt Injection 防护层，统一扫描用户、历史、工具和 RAG 外部文本；

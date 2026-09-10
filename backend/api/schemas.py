@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -711,6 +712,26 @@ class SafetyDecision(BaseModel):
     redaction_applied: bool = False
 
 
+class TraceEvent(BaseModel):
+    """Public execution evidence; never a hidden chain-of-thought record."""
+
+    event_type: str
+    timestamp: datetime
+    agent_mode: str
+    step: int = Field(ge=1)
+    schema_version: str
+    category: str
+    stage: str
+    name: str
+    status: str
+    target: dict[str, Any] = Field(default_factory=dict)
+    ids: dict[str, Any] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    signals: list[str] = Field(default_factory=list)
+    safety: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     """`/chat` 返回给调试后台的最小结构化响应。"""
 
@@ -887,6 +908,7 @@ SafetyScan.model_rebuild(
     _types_namespace={"ExternalSourceType": ExternalSourceType}
 )
 SafetyDecision.model_rebuild(_types_namespace={"SafetyScan": SafetyScan})
+TraceEvent.model_rebuild(_types_namespace={"Any": Any, "datetime": datetime})
 ChatResponse.model_rebuild(
     _types_namespace={
         "Any": Any,

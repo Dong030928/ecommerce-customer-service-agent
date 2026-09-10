@@ -2,7 +2,7 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.29.0
+## v0.30.0
 
 当前版本提供：
 
@@ -30,6 +30,12 @@
 - 系统提示词、密钥、工具细节和隐藏推理请求在规划与回答模型调用前直接阻断；
 - 手机号和收货地址在进入 `sanitized_context`、RAG Prompt 或 Tool Message 前完成脱敏；
 - 安全层不替代 Workflow/HITL，外部文本仍不能绕过 checkpoint、恢复令牌、角色和事实复核；
+- 新增公开 Trace 可观测层，将关键执行节点规范化为 `trace_event_v1`；
+- Trace 覆盖 Runtime Context、Context、路由、RAG、工具、Workflow/HITL、Hooks、成本和最终回答；
+- 新增 `GET /sessions/{session_id}/trace`，可按会话读取有序 Trace 事件；
+- `/chat` 和 `/chat/resume` 的 `session_state.trace` 公开事件数量、Schema 版本及查询地址；
+- Trace payload 递归移除系统提示词、隐藏推理、恢复令牌、幂等键、原始工具结果和身份字段；
+- 每条事件明确 `public_trace=true`、`hidden_cot_exposed=false`，Trace 是执行证据而不是思维链；
 - 受控的电商客服身份与业务事实边界；
 - 规则优先、轻量分类模型兜底的结构化意图识别；
 - 稳定的 `intent_result`（意图、来源、置信度、命中词和说明）；
@@ -139,9 +145,9 @@
 - `/health` 与 `/capabilities`；
 - 模型缺失或调用失败时的安全话术回退。
 
-当前入口先扫描用户与历史文本，泄密请求在规划模型前阻断，普通污染指令经隔离后再进入意图和路由链路。可信 Runtime Context 与用户文本保持双通道，Session Memory 仅做受控消歧；稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → 安全清洗 → Grounded Answer/Citations”，实时事实进入“MCP-style Catalog → ClarificationPlan → Hooks → LangChain Tool Use → ToolResult → 安全 Observation”。高风险写请求进入 LangGraph Action Boundary。每条路由结束时，Context Builder 按来源与信任级别汇总，上下文压缩层按保护项、相关性和最近窗口生成候选，安全层再公开 `safety_decision` 与 `sanitized_context`。原始用户身份、ToolResult、恢复令牌、幂等键、冻结字段和隐藏推理链不进入模型上下文候选。
+当前入口先扫描用户与历史文本，泄密请求在规划模型前阻断，普通污染指令经隔离后再进入意图和路由链路。可信 Runtime Context 与用户文本保持双通道，Session Memory 仅做受控消歧；稳定知识进入“版本化索引 → 查询改写 → Hybrid RAG → Reranker → 安全清洗 → Grounded Answer/Citations”，实时事实进入“MCP-style Catalog → ClarificationPlan → Hooks → LangChain Tool Use → ToolResult → 安全 Observation”。高风险写请求进入 LangGraph Action Boundary。每条路由结束时，Context Builder 按来源与信任级别汇总，上下文压缩层按保护项、相关性和最近窗口生成候选，安全层公开 `safety_decision`，Trace 层再把已完成的关键节点写成有序、脱敏的公共执行证据。原始用户身份、ToolResult、恢复令牌、幂等键、冻结字段和隐藏推理链不进入模型上下文或 Trace。
 
-关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引、缓存、checkpoint、Session Memory 和模拟售后申请记录均为进程内实现，不是独立数据库或分布式状态服务。Context Builder、压缩与 Prompt Injection 防护当前使用确定性规则，不调用模型生成历史摘要，也不是覆盖全部对抗表达的内容审核系统；Memory 仍不是长期用户画像。TaskPlanner 只生成入口 RoutePlan，业务工具仍只支持只读查询；审批人字段仍依赖受信网关注入，尚未接入独立认证/RBAC、真实业务写入或远程 MCP Server。
+关键词检索仍是透明的轻量精确词实现，不是完整 BM25/搜索引擎；索引、缓存、checkpoint、Session Memory、Trace 和模拟售后申请记录均为进程内实现，不是独立数据库或分布式状态服务。Context Builder、压缩与 Prompt Injection 防护当前使用确定性规则，不调用模型生成历史摘要，也不是覆盖全部对抗表达的内容审核系统；Trace 只说明公开执行结果，不提供隐藏思维链，当前尚未接入 Evaluation、失败归因或持久化观测平台。TaskPlanner 只生成入口 RoutePlan，业务工具仍只支持只读查询；审批人字段仍依赖受信网关注入，尚未接入独立认证/RBAC、真实业务写入或远程 MCP Server。
 
 ## 项目结构
 
@@ -161,7 +167,7 @@ backend/
   mcp_catalog/  # MCP-style 工具、Resource、Prompt 统一目录与绑定摘要
   memory/       # 有写入策略和排除策略的进程内 Session Memory
   models/       # OpenAI-compatible 分类和回答模型客户端
-  observability/ # ToolResult 到安全 Observation 的压缩层
+  observability/ # 公共 Trace 事件规范化与会话存储
   planner/      # TaskPlanner、RoutePlan 白名单约束与公开 PlannerTrace
   rag/          # 文档切片、版本化索引、检索缓存、混合召回、重排与质量检查
   tools/        # 只读工具契约、规划、可信执行与 LangChain Tool Calling

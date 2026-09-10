@@ -1,1 +1,1 @@
-"""Public-safe observability contracts for internal execution results."""
+"""Public-safe observability contracts and stores."""

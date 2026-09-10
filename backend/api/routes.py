@@ -6,8 +6,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import ChatRequest, ChatResponse, ChatResumeRequest, ChatResumeResponse
+from api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ChatResumeRequest,
+    ChatResumeResponse,
+    TraceEvent,
+)
 from config.settings import load_agent_capabilities
+from observability.trace import trace_store
 from rag.index_cache import get_knowledge_index
 
 
@@ -23,7 +30,7 @@ def create_router(agent_provider: Any) -> APIRouter:
         index = get_knowledge_index()
         return {
             "status": "ok",
-            "version": "0.29.0",
+            "version": "0.30.0",
             "rag_index_version": index.version,
             "rag_index_chunks": index.chunk_count,
         }
@@ -51,5 +58,11 @@ def create_router(agent_provider: Any) -> APIRouter:
             return agent_provider().resume(request)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.get("/sessions/{session_id}/trace", response_model=list[TraceEvent])
+    def session_trace(session_id: str) -> list[TraceEvent]:
+        """Return public-safe structured execution events for one session."""
+
+        return trace_store.list(session_id)
 
     return router

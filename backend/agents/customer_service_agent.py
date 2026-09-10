@@ -13,6 +13,8 @@ from api.schemas import (
     ChatResponse,
     Citation,
     ClarificationRequest,
+    CompressionReport,
+    ContextBuildReport,
     DegradationState,
     ExternalText,
     Intent,
@@ -30,6 +32,7 @@ from config.settings import (
     HYBRID_CANDIDATE_K,
     LOW_CONFIDENCE_THRESHOLD,
     RETRIEVAL_SCORE_THRESHOLD,
+    TRACE_SCHEMA_VERSION,
 )
 from context.compression import ContextCompressor
 from context.context_builder import ContextBuilder
@@ -52,6 +55,7 @@ from models.classifier_client import classify_intent_with_model
 from models.clarification_planner import plan_clarification_with_model
 from models.llm_client import ModelAnswerResult, call_chat_model
 from models.task_planner_client import TaskPlannerModelClient
+from observability.trace import trace_store
 from planner.task_planner import TaskPlanner
 from policies.after_sale_policy import AfterSalePolicyService
 from rag.knowledge_base import load_knowledge_chunks
@@ -487,6 +491,177 @@ class CustomerServiceAgent:
             explanation=planner_trace.public_reason,
         )
 
+    @staticmethod
+    def _record_public_trace(
+        *,
+        response: ChatResponse,
+        route_plan: RoutePlan,
+        runtime_context_view: RuntimeContextView,
+        context_report: ContextBuildReport,
+        compression_report: CompressionReport,
+        safety_decision: SafetyDecision,
+        hooks: HookManager,
+    ) -> int:
+        """Record public execution evidence without prompts, payloads, or CoT."""
+
+        session_id = response.session_id
+        trace_store.add(
+            session_id,
+            "runtime_context_built",
+            {
+                "member_level": runtime_context_view.trusted_for_model.get(
+                    "member_level", "unknown"
+                ),
+                "page_context_present": bool(
+                    runtime_context_view.trusted_for_model.get("page_context")
+                ),
+                "risk_level_present": bool(
+                    runtime_context_view.system_only.get("risk_level")
+                ),
+                "identity_verified": bool(
+                    runtime_context_view.system_only.get("user_id_present")
+                ),
+            },
+        )
+        trace_store.add(
+            session_id,
+            "context_built",
+            {
+                "intent": response.intent,
+                "sources": sorted(
+                    {item.source_type for item in context_report.selected_items}
+                ),
+                "selected_count": len(context_report.selected_items),
+                "excluded_count": len(context_report.excluded_items),
+                "compression_before": compression_report.token_estimate_before,
+                "compression_after": compression_report.token_estimate_after,
+                "dropped_count": len(compression_report.dropped_items),
+            },
+        )
+        trace_store.add(
+            session_id,
+            "route_planned",
+            {
+                "intent": route_plan.intent,
+                "execution_route": route_plan.execution_route,
+                "risk_level": route_plan.risk_level,
+                "requires_workflow": route_plan.requires_workflow,
+                "required_tools": route_plan.required_tools,
+            },
+        )
+        if safety_decision.blocked_user_request:
+            trace_store.add(
+                session_id,
+                "prompt_security_blocked",
+                {
+                    "status": "blocked",
+                    "risk_level": "high",
+                    "refused_topics": safety_decision.refused_topics,
+                    "tainted_source_count": sum(
+                        scan.tainted for scan in safety_decision.source_scans
+                    ),
+                },
+            )
+        if response.citations:
+            trace_store.add(
+                session_id,
+                "rag_pre_retrieved",
+                {
+                    "hit_count": len(response.citations),
+                    "retrieval_stage": "hybrid_rag_after_rerank",
+                    "chunk_ids": [item.chunk_id for item in response.citations],
+                },
+            )
+        for index, record in enumerate(response.tool_calls, start=1):
+            tool_call_id = f"tool-{index}"
+            trace_store.add(
+                session_id,
+                "tool_started",
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": record.action.tool_name,
+                    "argument_names": sorted(record.action.arguments),
+                },
+            )
+            trace_store.add(
+                session_id,
+                "tool_finished",
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": record.action.tool_name,
+                    "status": record.observation.status,
+                    "next_action": record.observation.next_action,
+                    "error_category": record.observation.error_category,
+                    "attempts": record.attempts,
+                },
+            )
+        if response.workflow is not None:
+            trace_store.add(
+                session_id,
+                "workflow_completed",
+                {
+                    "workflow_id": response.workflow.workflow_id,
+                    "workflow_type": response.workflow.workflow_type,
+                    "status": response.workflow.status,
+                    "pending_action": response.workflow.pending_action,
+                    "risk_level": response.risk_level,
+                    "needs_human_approval": response.needs_human_approval,
+                    "node_count": len(response.workflow.node_history),
+                },
+            )
+        if response.needs_human_approval:
+            trace_store.add(
+                session_id,
+                "human_approval_required",
+                {
+                    "workflow_id": (
+                        response.workflow.workflow_id if response.workflow else None
+                    ),
+                    "pending_action": (
+                        response.workflow.pending_action
+                        if response.workflow
+                        else "transfer_to_human"
+                    ),
+                    "risk_level": response.risk_level,
+                    "needs_human_approval": True,
+                },
+            )
+        for event in hooks.events:
+            trace_store.add(
+                session_id,
+                "hook_executed",
+                {
+                    "hook_type": event.hook_type,
+                    "target_name": event.target_name,
+                    "result": event.result,
+                    "redacted": event.redacted,
+                    "pollution_detected": event.pollution_detected,
+                    "degraded": event.degraded,
+                },
+            )
+        trace_store.add(
+            session_id,
+            "cost_recorded",
+            {
+                "path_type": route_plan.execution_route,
+                "tool_call_count": len(response.tool_calls),
+                "total_tokens": response.cost_summary.total_tokens,
+                "token_source": response.cost_summary.token_source,
+                "degraded": response.degraded,
+            },
+        )
+        trace_store.add(
+            session_id,
+            "final_answer_generated",
+            {
+                "intent": response.intent,
+                "status": "success",
+                "risk_level": response.risk_level,
+                "next_action": response.next_action,
+            },
+        )
+        return len(trace_store.list(session_id))
+
     def _finalize_with_hooks(
         self,
         response: ChatResponse,
@@ -582,7 +757,7 @@ class CustomerServiceAgent:
             response_external_texts,
         )
         sanitized_context = build_sanitized_context(safety_decision)
-        state["agent_version"] = "0.29.0"
+        state["agent_version"] = "0.30.0"
         state["runtime_context"] = runtime_context_view.model_dump()
         state["context_builder"] = context_report.model_dump()
         state["compression"] = {
@@ -639,6 +814,25 @@ class CustomerServiceAgent:
                 "上下文压缩优先保留当前事实和流程边界，并用 Sliding Window 与相关性缓解 Lost in the Middle。",
                 "用户、工具和 RAG 文本统一经过 Prompt Injection 扫描；系统提示词、隐藏推理和密钥请求不会进入模型。",
             ]
+        )
+        trace_event_count = self._record_public_trace(
+            response=response,
+            route_plan=route_plan,
+            runtime_context_view=runtime_context_view,
+            context_report=context_report,
+            compression_report=compression_report,
+            safety_decision=safety_decision,
+            hooks=hooks,
+        )
+        state["trace"] = {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "event_count": trace_event_count,
+            "public_trace_only": True,
+            "hidden_cot_exposed": False,
+            "endpoint": f"/sessions/{response.session_id}/trace",
+        }
+        reasoning_summary.append(
+            "Trace 只记录可复盘的公开执行证据，不保存系统提示词、原始敏感数据或隐藏思维链。"
         )
         return response.model_copy(
             update={
@@ -825,7 +1019,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.29.0",
+                "agent_version": "0.30.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -990,7 +1184,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.29.0",
+                "agent_version": "0.30.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1177,7 +1371,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.29.0"
+        state["agent_version"] = "0.30.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1359,7 +1553,7 @@ class CustomerServiceAgent:
                         "本轮请求在路由和模型调用前被安全边界阻断。",
                     ],
                     session_state={
-                        "agent_version": "0.29.0",
+                        "agent_version": "0.30.0",
                         "message_count": message_count,
                         "degradation": {},
                     },
@@ -1623,7 +1817,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.29.0",
+            "agent_version": "0.30.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1759,4 +1953,34 @@ class CustomerServiceAgent:
     def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:
         """Resume HITL through checkpoint validation, never through ordinary chat."""
 
-        return self._after_sale_workflow.resume(request)
+        response = self._after_sale_workflow.resume(request)
+        trace_store.add(
+            request.session_id,
+            "workflow_resumed",
+            {
+                "workflow_id": request.workflow_id,
+                "status": response.status,
+                "accepted": response.resume_result.accepted,
+                "idempotent_replay": response.resume_result.idempotent_replay,
+            },
+        )
+        trace_store.add(
+            request.session_id,
+            "human_approval_resolved",
+            {
+                "workflow_id": request.workflow_id,
+                "decision": request.decision,
+                "reviewer_role": request.reviewer_role,
+                "status": response.status,
+                "accepted": response.resume_result.accepted,
+            },
+        )
+        state = dict(response.session_state)
+        state["trace"] = {
+            "schema_version": TRACE_SCHEMA_VERSION,
+            "event_count": len(trace_store.list(request.session_id)),
+            "public_trace_only": True,
+            "hidden_cot_exposed": False,
+            "endpoint": f"/sessions/{request.session_id}/trace",
+        }
+        return response.model_copy(update={"session_state": state})
