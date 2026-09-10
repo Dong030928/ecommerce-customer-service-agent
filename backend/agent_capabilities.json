@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.32.0-failure-attribution-feedback",
-    "title": "Failure Attribution and Feedback Loop",
-    "summary": "将用户反馈绑定到会话 Trace 与 Eval 证据，归因到具体模块，并把负反馈回填为进程内回归用例。"
+    "id": "v0.33.0-production-feedback-case-governance",
+    "title": "Production Feedback Case Governance",
+    "summary": "通过向量召回、人工确认、独立 Eval、失败归因和审批入库形成可持久化的反馈回归闭环。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.32.0"
+    "version": "0.33.0"
   },
   "endpoints": {
     "health": true,
@@ -15,7 +15,12 @@
     "chat_resume": true,
     "trace": true,
     "eval_run": true,
-    "feedback_submit": true
+    "eval_cases": true,
+    "feedback_submit": true,
+    "feedback_list": true,
+    "feedback_get": true,
+    "feedback_case_confirm": true,
+    "feedback_case_review": true
   },
   "features": {
     "chat": true,
@@ -167,7 +172,10 @@
     "feedback_submit": true,
     "failure_attribution": true,
     "eval_case_backfill": true,
-    "feedback_persistence": false,
+    "feedback_case_vector_recommendation": true,
+    "feedback_case_human_confirmation": true,
+    "feedback_case_human_review": true,
+    "feedback_persistence": true,
     "llm_as_judge": false,
     "cost_summary": true
   },
@@ -181,6 +189,6 @@
     "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "llm_as_judge": "当前评测使用固定断言，不执行模型裁判或语义质量打分。",
-    "feedback_persistence": "反馈记录与回填用例仅保存在当前进程内，服务重启后不会保留。"
+    "feedback_persistence": "反馈、Trace 快照、候选 Case 与已审批 Case 默认持久化到本地 .runtime JSON；它不是多实例数据库，公开部署前仍需替换为受鉴权的事务存储。"
   }
 }

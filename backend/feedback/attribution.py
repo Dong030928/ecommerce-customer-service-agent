@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
@@ -133,39 +136,183 @@ def build_backfilled_case(
 
 
 class FeedbackStore:
-    """Thread-safe, process-local feedback and generated-case store."""
+    """Thread-safe feedback workflow store with optional durable JSON storage."""
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: Path | None = None) -> None:
         self._lock = RLock()
-        self._records: list[FeedbackRecord] = []
-        self._cases: list[EvalCase] = []
+        self.storage_path = storage_path
+        self._records: dict[str, FeedbackRecord] = {}
+        self._requests: dict[str, FeedbackRequest] = {}
+        self._trace_events: dict[str, list[TraceEvent]] = {}
+        self._candidate_cases: dict[str, EvalCase] = {}
+        self._approved_cases: dict[str, EvalCase] = {}
+        self._load()
 
     @staticmethod
     def new_id() -> str:
         return f"fb-{uuid4().hex[:12]}"
 
-    def append(self, record: FeedbackRecord, backfilled_case: EvalCase | None) -> None:
+    def create(
+        self,
+        record: FeedbackRecord,
+        request: FeedbackRequest,
+        trace_events: list[TraceEvent],
+    ) -> None:
         with self._lock:
-            self._records.append(record.model_copy(deep=True))
-            if backfilled_case is not None:
-                self._cases.append(backfilled_case.model_copy(deep=True))
+            if record.feedback_id in self._records:
+                raise ValueError("反馈编号已存在。")
+            self._records[record.feedback_id] = record.model_copy(deep=True)
+            self._requests[record.feedback_id] = request.model_copy(deep=True)
+            self._trace_events[record.feedback_id] = [
+                event.model_copy(deep=True) for event in trace_events
+            ]
+            self._persist()
+
+    def get_record(self, feedback_id: str) -> FeedbackRecord | None:
+        with self._lock:
+            record = self._records.get(feedback_id)
+            return None if record is None else record.model_copy(deep=True)
+
+    def get_request(self, feedback_id: str) -> FeedbackRequest | None:
+        with self._lock:
+            request = self._requests.get(feedback_id)
+            return None if request is None else request.model_copy(deep=True)
+
+    def get_trace_events(self, feedback_id: str) -> list[TraceEvent]:
+        with self._lock:
+            return [
+                event.model_copy(deep=True)
+                for event in self._trace_events.get(feedback_id, [])
+            ]
+
+    def save_candidate(
+        self,
+        record: FeedbackRecord,
+        candidate: EvalCase,
+    ) -> None:
+        with self._lock:
+            self._require_record(record.feedback_id)
+            self._records[record.feedback_id] = record.model_copy(deep=True)
+            self._candidate_cases[record.feedback_id] = candidate.model_copy(deep=True)
+            self._persist()
+
+    def get_candidate(self, feedback_id: str) -> EvalCase | None:
+        with self._lock:
+            candidate = self._candidate_cases.get(feedback_id)
+            return None if candidate is None else candidate.model_copy(deep=True)
+
+    def finalize(
+        self,
+        record: FeedbackRecord,
+        approved_case: EvalCase | None = None,
+    ) -> None:
+        with self._lock:
+            self._require_record(record.feedback_id)
+            self._records[record.feedback_id] = record.model_copy(deep=True)
+            if approved_case is not None:
+                self._approved_cases[approved_case.case_id] = approved_case.model_copy(deep=True)
+                self._candidate_cases[record.feedback_id] = approved_case.model_copy(deep=True)
+            self._persist()
+
+    def list_approved_cases(self) -> list[EvalCase]:
+        with self._lock:
+            return [case.model_copy(deep=True) for case in self._approved_cases.values()]
 
     def list_cases(self) -> list[EvalCase]:
-        with self._lock:
-            return [case.model_copy(deep=True) for case in self._cases]
+        """Backward-compatible alias: only approved cases join regression runs."""
 
-    def list_records(self) -> list[FeedbackRecord]:
+        return self.list_approved_cases()
+
+    def list_records(self, status: str | None = None) -> list[FeedbackRecord]:
         with self._lock:
-            return [record.model_copy(deep=True) for record in self._records]
+            return [
+                record.model_copy(deep=True)
+                for record in self._records.values()
+                if status is None or record.status == status
+            ]
 
     def clear(self) -> None:
         with self._lock:
             self._records.clear()
-            self._cases.clear()
+            self._requests.clear()
+            self._trace_events.clear()
+            self._candidate_cases.clear()
+            self._approved_cases.clear()
+            self._persist()
+
+    def _require_record(self, feedback_id: str) -> None:
+        if feedback_id not in self._records:
+            raise KeyError("未找到反馈记录。")
+
+    def _load(self) -> None:
+        if self.storage_path is None or not self.storage_path.exists():
+            return
+        payload = json.loads(self.storage_path.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "feedback_store_v1":
+            raise ValueError("反馈存储版本不受支持。")
+        self._records = {
+            item["feedback_id"]: FeedbackRecord.model_validate(item)
+            for item in payload.get("records", [])
+        }
+        self._requests = {
+            feedback_id: FeedbackRequest.model_validate(item)
+            for feedback_id, item in payload.get("requests", {}).items()
+        }
+        self._trace_events = {
+            feedback_id: [TraceEvent.model_validate(event) for event in events]
+            for feedback_id, events in payload.get("trace_events", {}).items()
+        }
+        self._candidate_cases = {
+            feedback_id: EvalCase.model_validate(item)
+            for feedback_id, item in payload.get("candidate_cases", {}).items()
+        }
+        self._approved_cases = {
+            case_id: EvalCase.model_validate(item)
+            for case_id, item in payload.get("approved_cases", {}).items()
+        }
+
+    def _persist(self) -> None:
+        if self.storage_path is None:
+            return
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": "feedback_store_v1",
+            "records": [record.model_dump(mode="json") for record in self._records.values()],
+            "requests": {
+                feedback_id: request.model_dump(mode="json")
+                for feedback_id, request in self._requests.items()
+            },
+            "trace_events": {
+                feedback_id: [event.model_dump(mode="json") for event in events]
+                for feedback_id, events in self._trace_events.items()
+            },
+            "candidate_cases": {
+                feedback_id: case.model_dump(mode="json")
+                for feedback_id, case in self._candidate_cases.items()
+            },
+            "approved_cases": {
+                case_id: case.model_dump(mode="json")
+                for case_id, case in self._approved_cases.items()
+            },
+        }
+        temporary = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(self.storage_path)
 
 
 def safe_feedback_text(text: str) -> str:
     return TraceEventNormalizer.sanitize(sanitize_text(text)[0])
 
 
-feedback_store = FeedbackStore()
+DEFAULT_FEEDBACK_STORE_PATH = Path(
+    os.getenv(
+        "AGENT_FEEDBACK_STORE_PATH",
+        str(Path(__file__).resolve().parents[2] / ".runtime" / "feedback_store.json"),
+    )
+)
+
+
+feedback_store = FeedbackStore(DEFAULT_FEEDBACK_STORE_PATH)

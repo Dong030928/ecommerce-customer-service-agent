@@ -2,13 +2,15 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.32.0
+## v0.33.0
 
 当前版本提供：
 
-- 新增 `POST /feedback/submit`，将反馈绑定到已有会话的公开 Trace 和可选 Eval 用例；
-- 按 Prompt、RAG、Tool、Context、Workflow 或 EvaluationExpectation 输出确定性失败归因；
-- 负反馈会生成进程内回归用例，后续可通过 `/eval/run` 重新执行；
+- 负反馈会组合原问题、观察回答和评论，通过真实 Embedding 向量召回 Top-K 相似 Case；
+- Case 必须经过人工确认后才会触发 Agent 重跑，并由 EvalRunner 生成结构化评测证据；
+- 归因器综合反馈、事故 Trace 和 Eval 失败类别，生成待审核回填 Case；
+- 候选 Case 支持批准、拒绝或合并，只有批准项才会进入后续全量 `/eval/run`；
+- 反馈、事故 Trace 快照、候选 Case 和已审批 Case 默认持久化到 `.runtime/feedback_store.json`；
 - 新增固定 `cases.yml` 和 `POST /eval/run`，输出 `eval_report_v1` 回归报告；
 - 逐项断言回答信号、工具路径、知识引用、公开 Trace、Workflow/HITL 状态与禁止输出；
 - 独立评测会话、单用例筛选、执行异常隔离及失败原因分类；
@@ -288,14 +290,58 @@ HTTP 200 仅表示执行了评测，是否通过须检查 `failed`；单用例�
 
 ## 反馈归因与用例回填
 
-先调用 `/chat` 产生公开 Trace，再向 `POST /feedback/submit` 提交 `session_id`、评价、用户反馈和观察到的回答；
-可选的 `case_id` 会触发对应 Eval 用例并把失败分类作为归因证据，`user_message` 用于无现成用例时保存可复现输入。
-接口只接受已有 Trace 的会话；未知会话或用例返回 404。归因是基于显式规则的排障建议，不是根因证明。
+先调用 `/chat` 产生公开 Trace，再向 `POST /feedback/submit` 提交 `session_id`、可选 `message_id`、
+原问题、观察回答和反馈评论。负反馈会使用当前配置的真实 Embedding 服务，对固定 Case 和已审批回填 Case
+执行向量相似度召回；这一阶段只返回 Top-K 推荐，不运行 Eval，也不会把候选 Case 加入回归集。
 
-只有 `negative` 反馈会回填用例；`neutral` 和 `positive` 只记录反馈。回填用例复用已有用例的运行上下文和断言，
-或根据失败模块生成最小断言，并加入当前进程后续的 `/eval/run`。响应不会回显回填用例中的用户输入和 Runtime Context。
-用户评论与观察回答在记录前会经过安全脱敏；记录和回填用例均为线程安全的进程内数据，服务重启后丢失。
-当前没有反馈查询、持久化、去重、权限隔离或人工确认接口，公开部署前必须补齐鉴权和数据治理。
+```json
+{
+  "session_id": "session-U1001-abcd1234",
+  "message_id": "assistant-message-8",
+  "rating": "negative",
+  "user_message": "未发货订单现在能退款吗？",
+  "observed_answer": "系统直接承诺退款到账",
+  "user_comment": "没有说明人工审批",
+  "top_k": 3
+}
+```
+
+审核人员从推荐结果中选择已有 Case，调用
+`POST /feedback/{feedback_id}/case-confirm`；若没有匹配项，提交 `no_matching_case=true`。
+只有确认了已有 Case 才会由 EvalRunner 重新调用 Agent，生成回答、工具、引用、Trace 和状态断言结果。
+
+```json
+{
+  "case_id": "unshipped-refund-hitl",
+  "reviewer_id": "operator-001",
+  "reviewer_note": "推荐场景与事故一致"
+}
+```
+
+归因器综合脱敏后的反馈、提交时冻结的事故 Trace 快照和可选 Eval 结果，生成状态为
+`pending_case_review` 的候选回填 Case。最终通过 `POST /feedback/{feedback_id}/review`
+执行批准、拒绝或合并；批准时可以修订问题和断言。
+
+```json
+{
+  "decision": "approved",
+  "reviewer_id": "qa-001",
+  "reviewer_note": "场景可复现，断言有效",
+  "case_updates": {
+    "expected_signals": ["人工审批"],
+    "forbidden_text": ["已退款成功", "已到账"]
+  }
+}
+```
+
+只有 `approved` 的回填 Case 才会与 `backend/cases.yml` 一起参与后续 `/eval/run`；
+`rejected` 不入库，`merged` 只记录合并目标。审核台可用 `GET /feedback?status=...` 查看待办、
+用 `GET /feedback/{feedback_id}` 查询详情，并用 `GET /eval/cases` 进行手工 Case 选择。
+反馈数据默认原子写入 `.runtime/feedback_store.json`，也可用 `AGENT_FEEDBACK_STORE_PATH` 指定路径。
+Embedding 不可用时反馈仍会保存，并返回通用的 `recommendation_error` 供人工选择 Case。
+
+接口只接受已有 Trace 的会话，归因仍是基于公开证据的排障建议，不是根因证明。
+当前管理接口尚无鉴权，默认 JSON 存储也不支持多实例事务；公开部署前应接入运营权限、审计日志和数据库。
 
 验证命令：`python -m unittest discover -s tests -v`。测试中的业务与 Embedding 替身仅用于离线回归，
 不代表真实模型和电商后端的端到端验收。

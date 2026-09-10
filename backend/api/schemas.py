@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 ReasoningView = Literal["default", "off", "summary", "teaching"]
@@ -85,6 +85,14 @@ SourceType = Literal[
 ]
 TrustLevel = Literal["trusted", "verified", "session", "external", "untrusted"]
 ExternalSourceType = Literal["user", "tool", "rag"]
+FeedbackStatus = Literal[
+    "recorded",
+    "awaiting_case_confirmation",
+    "pending_case_review",
+    "approved",
+    "rejected",
+    "merged",
+]
 
 
 class HistoryMessage(BaseModel):
@@ -754,11 +762,73 @@ class FeedbackRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     session_id: str = Field(min_length=1, max_length=128)
-    case_id: str | None = Field(default=None, min_length=1, max_length=128)
+    message_id: str | None = Field(default=None, min_length=1, max_length=128)
     rating: Literal["negative", "neutral", "positive"] = "negative"
     user_comment: str = Field(min_length=1, max_length=2000)
     observed_answer: str = Field(min_length=1, max_length=8000)
     user_message: str | None = Field(default=None, min_length=1, max_length=4000)
+    top_k: int = Field(default=3, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def require_reproducible_negative_input(self) -> "FeedbackRequest":
+        if self.rating == "negative" and self.user_message is None:
+            raise ValueError("负反馈必须提供对应的原始用户问题。")
+        return self
+
+
+class CaseRecommendation(BaseModel):
+    """One vector-retrieved regression case awaiting human confirmation."""
+
+    case_id: str
+    similarity_score: float = Field(ge=-1.0, le=1.0)
+    scenario_summary: str
+    source: str
+    retrieval_method: Literal["vector_similarity"] = "vector_similarity"
+
+
+class EvalCaseSummary(BaseModel):
+    """Public-safe case catalog item for the trusted review console."""
+
+    case_id: str
+    scenario_summary: str
+    source: str
+
+
+class FeedbackCaseConfirmRequest(BaseModel):
+    """Human decision that selects an existing case or declares a new incident."""
+
+    model_config = ConfigDict(extra="forbid")
+    case_id: str | None = Field(default=None, min_length=1, max_length=128)
+    no_matching_case: bool = False
+    reviewer_id: str = Field(min_length=1, max_length=128)
+    reviewer_note: str | None = Field(default=None, max_length=2000)
+
+
+class EvalCaseReviewPatch(BaseModel):
+    """Editable fields exposed to the trusted case-review workflow."""
+
+    model_config = ConfigDict(extra="forbid")
+    user_message: str | None = Field(default=None, min_length=1, max_length=4000)
+    expected_signals: list[str] | None = None
+    expected_tools: list[str] | None = None
+    forbidden_tools: list[str] | None = None
+    expected_citations: list[str] | None = None
+    forbidden_citations: list[str] | None = None
+    expected_trace_events: list[str] | None = None
+    expected_session_state: list[str] | None = None
+    expected_response: dict[str, Any] | None = None
+    forbidden_text: list[str] | None = None
+
+
+class FeedbackCaseReviewRequest(BaseModel):
+    """Final human review before a generated case joins the active suite."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["approved", "rejected", "merged"]
+    reviewer_id: str = Field(min_length=1, max_length=128)
+    reviewer_note: str | None = Field(default=None, max_length=2000)
+    target_case_id: str | None = Field(default=None, min_length=1, max_length=128)
+    case_updates: EvalCaseReviewPatch | None = None
 
 
 class FailureAttribution(BaseModel):
@@ -771,14 +841,23 @@ class FailureAttribution(BaseModel):
 class FeedbackRecord(BaseModel):
     feedback_id: str
     session_id: str
+    message_id: str | None = None
     case_id: str | None = None
     rating: Literal["negative", "neutral", "positive"]
+    status: FeedbackStatus
     user_comment: str
     observed_answer: str
     trace_event_names: list[str] = Field(default_factory=list)
+    recommendations: list[CaseRecommendation] = Field(default_factory=list)
+    recommendation_error: str | None = None
     eval_failure_categories: list[str] = Field(default_factory=list)
     attributions: list[FailureAttribution] = Field(default_factory=list)
     backfilled_case: dict[str, Any] | None = None
+    reviewer_id: str | None = None
+    reviewer_note: str | None = None
+    merged_into_case_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class FeedbackSubmitResponse(BaseModel):

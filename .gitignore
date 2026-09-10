@@ -9,6 +9,7 @@ __pycache__/
 Thumbs.db
 logs/
 *.log
+.runtime/
 coverage/
 htmlcov/
 dist/
