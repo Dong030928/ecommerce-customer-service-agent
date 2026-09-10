@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.32.0
+
+- 合并 lesson39 的失败归因与反馈闭环能力，新增 `POST /feedback/submit`。
+- 将反馈绑定到已有会话 Trace 与可选 Eval 结果，按 Prompt、RAG、Tool、Context、Workflow 和测试期望归因。
+- 负反馈生成可执行的进程内回归用例，并自动并入后续 `/eval/run`；正向和中性反馈不回填失败用例。
+- 回填已有 case 时保留原始可复现输入、运行上下文和断言，公开响应不回显输入及 Runtime Context。
+- 增加反馈字段约束、敏感文本脱敏、未知会话/用例处理及线程安全存储。
+- FastAPI、健康检查、Workflow、Trace 和测试断言版本同步升级到 `0.32.0`。
+
 ## 0.31.0
 
 - 合并 lesson38 的固定用例回归评测能力，保持单一工程目录。

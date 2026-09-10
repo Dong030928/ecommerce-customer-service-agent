@@ -70,7 +70,7 @@ class PromptGuardTests(unittest.TestCase):
         self.assertTrue(response.planner_trace.safety_override)
         self.assertFalse(response.planner_trace.model_consulted)
         self.assertIn("不能提供系统提示词", response.answer)
-        self.assertEqual(response.session_state["agent_version"], "0.31.0")
+        self.assertEqual(response.session_state["agent_version"], "0.32.0")
         serialized = response.model_dump_json()
         self.assertNotIn("developer message", serialized.lower())
         self.assertNotIn("hidden reasoning", serialized.lower())

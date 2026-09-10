@@ -749,6 +749,43 @@ class EvalRunResponse(BaseModel):
     results: list[EvalCaseResult]
 
 
+class FeedbackRequest(BaseModel):
+    """User-visible incident evidence bound to an existing execution session."""
+
+    model_config = ConfigDict(extra="forbid")
+    session_id: str = Field(min_length=1, max_length=128)
+    case_id: str | None = Field(default=None, min_length=1, max_length=128)
+    rating: Literal["negative", "neutral", "positive"] = "negative"
+    user_comment: str = Field(min_length=1, max_length=2000)
+    observed_answer: str = Field(min_length=1, max_length=8000)
+    user_message: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class FailureAttribution(BaseModel):
+    module: Literal["Prompt", "RAG", "Tool", "Context", "Workflow", "EvaluationExpectation"]
+    category: str
+    evidence: list[str] = Field(default_factory=list)
+    suggested_fix: str
+
+
+class FeedbackRecord(BaseModel):
+    feedback_id: str
+    session_id: str
+    case_id: str | None = None
+    rating: Literal["negative", "neutral", "positive"]
+    user_comment: str
+    observed_answer: str
+    trace_event_names: list[str] = Field(default_factory=list)
+    eval_failure_categories: list[str] = Field(default_factory=list)
+    attributions: list[FailureAttribution] = Field(default_factory=list)
+    backfilled_case: dict[str, Any] | None = None
+
+
+class FeedbackSubmitResponse(BaseModel):
+    record: FeedbackRecord
+    eval_report: EvalRunResponse | None = None
+
+
 class TraceEvent(BaseModel):
     """Public execution evidence; never a hidden chain-of-thought record."""
 

@@ -2,10 +2,13 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.31.0
+## v0.32.0
 
 当前版本提供：
 
+- 新增 `POST /feedback/submit`，将反馈绑定到已有会话的公开 Trace 和可选 Eval 用例；
+- 按 Prompt、RAG、Tool、Context、Workflow 或 EvaluationExpectation 输出确定性失败归因；
+- 负反馈会生成进程内回归用例，后续可通过 `/eval/run` 重新执行；
 - 新增固定 `cases.yml` 和 `POST /eval/run`，输出 `eval_report_v1` 回归报告；
 - 逐项断言回答信号、工具路径、知识引用、公开 Trace、Workflow/HITL 状态与禁止输出；
 - 独立评测会话、单用例筛选、执行异常隔离及失败原因分类；
@@ -282,6 +285,17 @@ HTTP 200 仅表示执行了评测，是否通过须检查 `failed`；单用例�
 物流与退款用例依赖课程业务后端的 U1001 及指定订单种子；不会注入订单快照，也不会自动批准或恢复退款。
 用例只检查固定信号和状态，不是 LLM 裁判、语义正确率或生产级压测。评测会话与 Trace 仍存于进程内。
 本项目接口尚无独立认证；`/eval/run` 仅供本地/受信环境调试，公开部署前需增加鉴权、限流及会话清理。
+
+## 反馈归因与用例回填
+
+先调用 `/chat` 产生公开 Trace，再向 `POST /feedback/submit` 提交 `session_id`、评价、用户反馈和观察到的回答；
+可选的 `case_id` 会触发对应 Eval 用例并把失败分类作为归因证据，`user_message` 用于无现成用例时保存可复现输入。
+接口只接受已有 Trace 的会话；未知会话或用例返回 404。归因是基于显式规则的排障建议，不是根因证明。
+
+只有 `negative` 反馈会回填用例；`neutral` 和 `positive` 只记录反馈。回填用例复用已有用例的运行上下文和断言，
+或根据失败模块生成最小断言，并加入当前进程后续的 `/eval/run`。响应不会回显回填用例中的用户输入和 Runtime Context。
+用户评论与观察回答在记录前会经过安全脱敏；记录和回填用例均为线程安全的进程内数据，服务重启后丢失。
+当前没有反馈查询、持久化、去重、权限隔离或人工确认接口，公开部署前必须补齐鉴权和数据治理。
 
 验证命令：`python -m unittest discover -s tests -v`。测试中的业务与 Embedding 替身仅用于离线回归，
 不代表真实模型和电商后端的端到端验收。

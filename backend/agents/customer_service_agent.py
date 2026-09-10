@@ -757,7 +757,7 @@ class CustomerServiceAgent:
             response_external_texts,
         )
         sanitized_context = build_sanitized_context(safety_decision)
-        state["agent_version"] = "0.31.0"
+        state["agent_version"] = "0.32.0"
         state["runtime_context"] = runtime_context_view.model_dump()
         state["context_builder"] = context_report.model_dump()
         state["compression"] = {
@@ -1019,7 +1019,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.31.0",
+                "agent_version": "0.32.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1184,7 +1184,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.31.0",
+                "agent_version": "0.32.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1371,7 +1371,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.31.0"
+        state["agent_version"] = "0.32.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1553,7 +1553,7 @@ class CustomerServiceAgent:
                         "本轮请求在路由和模型调用前被安全边界阻断。",
                     ],
                     session_state={
-                        "agent_version": "0.31.0",
+                        "agent_version": "0.32.0",
                         "message_count": message_count,
                         "degradation": {},
                     },
@@ -1817,7 +1817,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.31.0",
+            "agent_version": "0.32.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +40,7 @@ class EvalCase(BaseModel):
     expected_session_state: list[str] = Field(default_factory=list)
     expected_response: dict[str, Any] = Field(default_factory=dict)
     forbidden_text: list[str] = Field(default_factory=list)
+    source: str = "fixed_suite"
 
 
 class UnknownCaseError(ValueError):
@@ -55,16 +56,21 @@ class EvalRunner:
         cases_path: Path = CASES_PATH,
         *,
         traces: TraceStore = trace_store,
+        backfilled_cases: Callable[[], list[EvalCase]] | None = None,
     ) -> None:
         self.agent = agent
         self.cases_path = cases_path
         self.traces = traces
+        self.backfilled_cases = backfilled_cases or (lambda: [])
 
     def load_cases(self) -> list[EvalCase]:
         payload = yaml.safe_load(self.cases_path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
             raise ValueError("评测文件必须包含 cases 列表。")
-        cases = [EvalCase.model_validate(item) for item in payload["cases"]]
+        cases = [
+            *[EvalCase.model_validate(item) for item in payload["cases"]],
+            *[EvalCase.model_validate(item) for item in self.backfilled_cases()],
+        ]
         ids = [case.case_id for case in cases]
         if not cases or len(ids) != len(set(ids)):
             raise ValueError("评测集不能为空，case_id 不可重复。")

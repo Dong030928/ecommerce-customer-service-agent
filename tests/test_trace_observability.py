@@ -52,7 +52,7 @@ class TraceObservabilityTests(unittest.TestCase):
         self.assertTrue(all(event.safety["public_trace"] for event in events))
         self.assertTrue(all(not event.safety["hidden_cot_exposed"] for event in events))
         self.assertEqual(response.session_state["trace"]["event_count"], len(events))
-        self.assertEqual(response.session_state["agent_version"], "0.31.0")
+        self.assertEqual(response.session_state["agent_version"], "0.32.0")
 
     def test_security_guard_emits_blocked_trace_without_raw_request(self) -> None:
         session_id = "trace-security-test"

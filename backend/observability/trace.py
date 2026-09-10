@@ -63,7 +63,7 @@ class TraceEventNormalizer:
         return TraceEvent(
             event_type=event_type,
             timestamp=datetime.now(timezone.utc),
-            agent_mode="0.31.0",
+            agent_mode="0.32.0",
             step=step,
             schema_version=TRACE_SCHEMA_VERSION,
             category=cls.CATEGORY_BY_EVENT.get(event_type, "system"),
