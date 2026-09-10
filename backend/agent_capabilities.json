@@ -1,20 +1,20 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.30.0-trace-observability",
-    "title": "Public Trace Observability",
-    "summary": "将 Runtime Context、Context、路由、RAG、工具、Workflow/HITL、Hooks、成本和回答记录为安全的 trace_event_v1 事件。"
+    "id": "v0.31.0-evaluation-regression",
+    "title": "Evaluation Regression",
+    "summary": "通过固定 YAML 用例和 /eval/run 对回答、工具、引用、Trace 及 Workflow 状态进行回归断言，输出 eval_report_v1。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.30.0"
+    "version": "0.31.0"
   },
   "endpoints": {
     "health": true,
     "chat": true,
     "chat_resume": true,
     "trace": true,
-    "eval_run": false
+    "eval_run": true
   },
   "features": {
     "chat": true,
@@ -160,7 +160,10 @@
     "trace_payload_sanitization": true,
     "hidden_cot_protection": true,
     "workflow_resume_trace": true,
-    "evaluation": false,
+    "evaluation": true,
+    "eval_report_v1": true,
+    "fixed_case_regression": true,
+    "llm_as_judge": false,
     "cost_summary": true
   },
   "disabled_reasons": {
@@ -172,6 +175,6 @@
     "external_business_write": "审批通过后只记录课程阶段的进程内售后申请，不调用真实退款或退货写接口。",
     "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
-    "evaluation": "Evaluation 回归评测将在后续版本接入。"
+    "llm_as_judge": "当前评测使用固定断言，不执行模型裁判或语义质量打分。"
   }
 }

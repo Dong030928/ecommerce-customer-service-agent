@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 ReasoningView = Literal["default", "off", "summary", "teaching"]
@@ -710,6 +710,43 @@ class SafetyDecision(BaseModel):
     source_scans: list[SafetyScan] = Field(default_factory=list)
     public_summary: list[str] = Field(default_factory=list)
     redaction_applied: bool = False
+
+
+class EvalRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str | None = None
+
+
+class EvalCaseResult(BaseModel):
+    case_id: str
+    session_id: str
+    passed: bool
+    user_message: str
+    expected_signals: list[str] = Field(default_factory=list)
+    actual_answer: str = ""
+    actual_tools: list[str] = Field(default_factory=list)
+    actual_citations: list[str] = Field(default_factory=list)
+    actual_trace_events: list[str] = Field(default_factory=list)
+    missing_signals: list[str] = Field(default_factory=list)
+    missing_tools: list[str] = Field(default_factory=list)
+    unexpected_tools: list[str] = Field(default_factory=list)
+    missing_citations: list[str] = Field(default_factory=list)
+    forbidden_citation_hits: list[str] = Field(default_factory=list)
+    missing_trace_events: list[str] = Field(default_factory=list)
+    missing_session_state: list[str] = Field(default_factory=list)
+    response_mismatches: list[str] = Field(default_factory=list)
+    forbidden_text_hits: list[str] = Field(default_factory=list)
+    failure_categories: list[str] = Field(default_factory=list)
+    error_type: str | None = None
+
+
+class EvalRunResponse(BaseModel):
+    run_id: str
+    total: int
+    passed: int
+    failed: int
+    summary: dict[str, Any]
+    results: list[EvalCaseResult]
 
 
 class TraceEvent(BaseModel):

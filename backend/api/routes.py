@@ -5,15 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from yaml import YAMLError
 
 from api.schemas import (
     ChatRequest,
     ChatResponse,
     ChatResumeRequest,
     ChatResumeResponse,
+    EvalRunRequest,
+    EvalRunResponse,
     TraceEvent,
 )
 from config.settings import load_agent_capabilities
+from evals.runner import EvalRunner, UnknownCaseError
 from observability.trace import trace_store
 from rag.index_cache import get_knowledge_index
 
@@ -30,7 +34,7 @@ def create_router(agent_provider: Any) -> APIRouter:
         index = get_knowledge_index()
         return {
             "status": "ok",
-            "version": "0.30.0",
+            "version": "0.31.0",
             "rag_index_version": index.version,
             "rag_index_chunks": index.chunk_count,
         }
@@ -64,5 +68,16 @@ def create_router(agent_provider: Any) -> APIRouter:
         """Return public-safe structured execution events for one session."""
 
         return trace_store.list(session_id)
+
+    @router.post("/eval/run", response_model=EvalRunResponse)
+    def eval_run(request: EvalRunRequest) -> EvalRunResponse:
+        """Run the fixed regression suite, or one named case."""
+
+        try:
+            return EvalRunner(agent_provider()).run(request.case_id)
+        except UnknownCaseError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError, YAMLError) as exc:
+            raise HTTPException(status_code=500, detail="评测用例配置无法读取或校验失败。") from exc
 
     return router

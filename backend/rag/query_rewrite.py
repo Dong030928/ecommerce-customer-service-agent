@@ -64,8 +64,12 @@ def rewrite_retrieval_query(user_message: str, intent: Intent) -> QueryRewrite:
         add_rewrite_terms(added_terms, ["降噪耳机"])
         rewrite_reasons.append("补齐知识库中的具体商品类目")
     elif intent == "refund_request":
-        add_rewrite_terms(added_terms, ["售后规则", "签收时间", "退货条件", "凭证"])
-        rewrite_reasons.append("售后意图补齐签收时间、退货条件和凭证要求")
+        if any(term in normalized for term in ["未发货", "没发货", "待发货"]):
+            add_rewrite_terms(added_terms, ["未发货", "退款", "支付", "订单", "人工审批"])
+            rewrite_reasons.append("未发货退款补齐支付状态与审批边界，避免扩展成签收后退货")
+        else:
+            add_rewrite_terms(added_terms, ["售后规则", "签收时间", "退货条件", "凭证"])
+            rewrite_reasons.append("售后意图补齐签收时间、退货条件和凭证要求")
 
     rewritten_query = (
         " ".join(part for part in [normalized, *added_terms] if part).strip()

@@ -2,10 +2,13 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.30.0
+## v0.31.0
 
 当前版本提供：
 
+- 新增固定 `cases.yml` 和 `POST /eval/run`，输出 `eval_report_v1` 回归报告；
+- 逐项断言回答信号、工具路径、知识引用、公开 Trace、Workflow/HITL 状态与禁止输出；
+- 独立评测会话、单用例筛选、执行异常隔离及失败原因分类；
 - FastAPI 服务与 `POST /chat`；
 - OpenAI-compatible 聊天模型调用；
 - `session_id` 和可信 Runtime Context 接入；
@@ -261,6 +264,27 @@ python -m unittest discover -s tests -v
 - 分开的输入、输出及总成本估算。
 
 成本只是趋势观察，不替代模型平台的真实账单。
+
+## 固定用例回归评测
+
+先安装 `requirements.txt`（新增 PyYAML）。服务运行后，`POST /eval/run` 发送 `{}` 执行全部用例，
+发送 `{"case_id":"prompt-injection-trace-boundary"}` 只执行安全边界用例。固定用例在 `backend/cases.yml`，
+覆盖物流工具路径、未发货退款审批暂停、安全防护与公开 Trace。退款规则保存在售后 Markdown 中，引用来自检索结果，不由评测器伪造。
+
+报告包含 `run_id`、`total/passed/failed`、各用例的独立 `session_id`、实际回答/工具/引用/事件和失败分类。
+`expected_signals` 匹配回答及公开执行信号；`expected_session_state` 支持 `path=value`，
+`expected_response` 对顶层或嵌套响应字段做类型严格的值匹配。缺失字段不会匹配 `null`。
+禁止文本在脱敏前的回答、工具 Observation、引用片段与公开 Trace 中检查；报告中的回答再脱敏。
+HTTP 200 仅表示执行了评测，是否通过须检查 `failed`；单用例异常记为 `execution_error` 并继续其他用例。
+未知用例返回 404，错误配置返回 500，请求格式错误返回 422。
+
+运行边界：评测器复用当前 Agent 及其模型、Embedding 和业务 API 配置，会产生调用成本。
+物流与退款用例依赖课程业务后端的 U1001 及指定订单种子；不会注入订单快照，也不会自动批准或恢复退款。
+用例只检查固定信号和状态，不是 LLM 裁判、语义正确率或生产级压测。评测会话与 Trace 仍存于进程内。
+本项目接口尚无独立认证；`/eval/run` 仅供本地/受信环境调试，公开部署前需增加鉴权、限流及会话清理。
+
+验证命令：`python -m unittest discover -s tests -v`。测试中的业务与 Embedding 替身仅用于离线回归，
+不代表真实模型和电商后端的端到端验收。
 
 ## 演进原则
 

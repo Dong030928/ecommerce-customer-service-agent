@@ -153,7 +153,7 @@ class ContextBuilderTests(unittest.TestCase):
             response.session_state["context_builder"],
             response.context_report.model_dump(),
         )
-        self.assertEqual(response.session_state["agent_version"], "0.30.0")
+        self.assertEqual(response.session_state["agent_version"], "0.31.0")
 
 
 if __name__ == "__main__":
