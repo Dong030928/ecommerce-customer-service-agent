@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.33.0-production-feedback-case-governance",
-    "title": "Production Feedback Case Governance",
-    "summary": "通过向量召回、人工确认、独立 Eval、失败归因和审批入库形成可持久化的反馈回归闭环。"
+    "id": "v0.34.0-cost-governance",
+    "title": "Request Cost Governance",
+    "summary": "在既有 token 与金额估算上增加路径分层、模型阶段、RAG 缓存、Prompt 片段、Observation 压缩、预算告警和 HITL 恢复成本信号。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.33.0"
+    "version": "0.34.0"
   },
   "endpoints": {
     "health": true,
@@ -177,7 +177,16 @@
     "feedback_case_human_review": true,
     "feedback_persistence": true,
     "llm_as_judge": false,
-    "cost_summary": true
+    "cost_summary": true,
+    "cost_summary_v1": true,
+    "cost_path_tiering": true,
+    "cost_model_call_signals": true,
+    "cost_rag_cache_signals": true,
+    "cost_prompt_fragments": true,
+    "cost_observation_compression": true,
+    "cost_budget_warning": true,
+    "cost_hitl_resume_path": true,
+    "finops_billing": false
   },
   "disabled_reasons": {
     "reasoning_content": "当前版本只开放 /chat 接入，不展示模型 reasoning_content。",
@@ -189,6 +198,7 @@
     "long_term_memory": "当前只保留进程内 Session Memory，不建立长期用户画像。",
     "remote_mcp_server": "当前是本地 MCP-style 能力目录，尚未连接或部署完整远程 MCP Server。",
     "llm_as_judge": "当前评测使用固定断言，不执行模型裁判或语义质量打分。",
-    "feedback_persistence": "反馈、Trace 快照、候选 Case 与已审批 Case 默认持久化到本地 .runtime JSON；它不是多实例数据库，公开部署前仍需替换为受鉴权的事务存储。"
+    "feedback_persistence": "反馈、Trace 快照、候选 Case 与已审批 Case 默认持久化到本地 .runtime JSON；它不是多实例数据库，公开部署前仍需替换为受鉴权的事务存储。",
+    "finops_billing": "当前提供请求级成本观察和预算告警，不是模型平台账单、预算审批流或多团队成本中心。"
   }
 }

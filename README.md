@@ -2,10 +2,13 @@
 
 一个持续演进的电商客服 Agent 项目。仓库始终维护单一可运行版本，通过 Git 提交和版本标签记录从最小聊天服务到 RAG、Tool Calling、Workflow/HITL、Memory、Trace 和 Evaluation 的演进过程。
 
-## v0.33.0
+## v0.34.0
 
 当前版本提供：
 
+- 将成本摘要扩展为 `cost_summary_v1`，区分普通、RAG、缓存 RAG、Tool、Tool+RAG、Workflow、安全阻断和 HITL 恢复路径；
+- 汇总逻辑模型阶段、工具次数、RAG 命中/缓存、Prompt 片段、Observation 压缩和请求 token 预算告警；
+- 保留原有模型 usage、本地 token 估算与人民币金额估算，并明确未汇总的 Embedding、Reranker 和业务 API 账单；
 - 负反馈会组合原问题、观察回答和评论，通过真实 Embedding 向量召回 Top-K 相似 Case；
 - Case 必须经过人工确认后才会触发 Agent 重跑，并由 EvalRunner 生成结构化评测证据；
 - 归因器综合反馈、事故 Trace 和 Eval 失败类别，生成待审核回填 Case；
@@ -261,14 +264,22 @@ python -m unittest discover -s tests -v
 
 运行中修改知识文件后，可重启服务或在受控维护流程中调用 `rebuild_knowledge_index()` 重建索引；项目不暴露无鉴权的 HTTP 重建接口。重建会原子替换索引快照，并清空依赖旧版本的向量和检索缓存。
 
-顶层 `cost_summary` 继续返回：
+顶层 `cost_summary` 返回：
 
 - `prompt_tokens`、`answer_tokens` 和 `total_tokens`；
 - `token_source=model_usage` 或 `local_estimate`；
 - 模型平台返回的 reasoning/cache usage 明细；
 - 分开的输入、输出及总成本估算。
+- `path_type`、逻辑模型阶段、工具次数与 Workflow/HITL 状态；
+- RAG 命中与真实检索缓存信号、按路径选择的 Prompt 片段；
+- 已公开 Observation 到实际模型可见字段的压缩量，不读取或统计原始 ToolResult；Tool 路径如完整传递脱敏 Observation，会如实显示节省量为 0；
+- `AGENT_REQUEST_TOKEN_BUDGET`（默认 1000）对应的剩余额度和超限告警；
+- `safety_boundary` 明确成本治理不会跳过业务事实查询或人工审批。
 
-成本只是趋势观察，不替代模型平台的真实账单。
+`/chat/resume` 也会在 `session_state.cost_summary` 和 Trace 中记录独立的 `hitl_resume_path`，
+其规划与回答模型阶段均为 0，表示恢复协议不会重新跑聊天主链路。模型次数是逻辑阶段信号，
+当前金额只覆盖传入成本观察器的回答上下文或模型 usage，尚未聚合 Embedding、Reranker、Tool Calling 内部多轮和业务 API 账单。
+成本摘要用于趋势和边界观察，不替代模型平台真实账单或完整 FinOps。
 
 ## 固定用例回归评测
 

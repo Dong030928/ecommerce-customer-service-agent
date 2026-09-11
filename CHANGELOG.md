@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.34.0
+
+- 合并 lesson40 的请求级成本治理，在既有 token 与人民币金额估算上增加 `cost_summary_v1` 结构化维度。
+- 区分普通、RAG、缓存 RAG、Tool、Tool+RAG、Workflow、安全阻断及 HITL 恢复路径。
+- 新增逻辑模型阶段、工具次数、真实 RAG 缓存、Prompt 片段和公开 Observation 压缩信号。
+- 新增 `AGENT_REQUEST_TOKEN_BUDGET` 请求预算与超限告警，非法或非正配置回退到安全默认值。
+- `/chat/resume` 单独记录成本摘要与 `cost_recorded` Trace，不重新调用规划或回答模型。
+- 成本治理不缓存高风险工作流，不跳过业务事实或 HITL，并明确当前统计不等同完整 FinOps/平台账单。
+- FastAPI、健康检查、Workflow、Trace 和测试断言版本同步升级到 `0.34.0`。
+
 ## 0.33.0
 
 - 将负反馈改为“向量推荐、人工确认、重跑评测、失败归因、候选审核、批准入库”的分阶段闭环。

@@ -6,7 +6,12 @@ import os
 from typing import Any, Literal
 
 from api.schemas import CostSummary, TokenUsage
-from config.settings import DEFAULT_INPUT_CNY_PER_1K, DEFAULT_OUTPUT_CNY_PER_1K
+from config.settings import (
+    DEFAULT_INPUT_CNY_PER_1K,
+    DEFAULT_OUTPUT_CNY_PER_1K,
+    load_project_env,
+)
+from cost.governance import CostGovernanceContext, governance_dimensions
 
 
 def estimate_tokens(text: str) -> int:
@@ -103,9 +108,12 @@ def build_cost_summary(
     messages: list[dict[str, str]],
     answer: str,
     usage: TokenUsage | None = None,
+    *,
+    governance: CostGovernanceContext | None = None,
 ) -> CostSummary:
     """Build a public cost summary from provider usage or a local estimate."""
 
+    load_project_env()
     estimated_prompt_tokens, context_chars = estimate_messages_tokens(messages)
     if usage is not None:
         prompt_tokens = usage.prompt_tokens
@@ -126,6 +134,13 @@ def build_cost_summary(
     output_price = read_price_per_1k("AGENT_OUTPUT_CNY_PER_1K", DEFAULT_OUTPUT_CNY_PER_1K)
     input_cost = prompt_tokens / 1000 * input_price
     output_cost = answer_tokens / 1000 * output_price
+    governance_fields = governance_dimensions(
+        governance or CostGovernanceContext(path_type="unclassified", intent="unknown"),
+        prompt_tokens=prompt_tokens,
+        answer_tokens=answer_tokens,
+        total_tokens=total_tokens,
+        token_source=token_source,
+    )
     return CostSummary(
         prompt_tokens=prompt_tokens,
         answer_tokens=answer_tokens,
@@ -136,5 +151,9 @@ def build_cost_summary(
         estimated_output_cost_cny=round(output_cost, 6),
         estimated_total_cost_cny=round(input_cost + output_cost, 6),
         context_chars=context_chars,
-        pricing_note=pricing_note,
+        pricing_note=(
+            pricing_note
+            + " 当前摘要未汇总 Embedding、Reranker、工具业务 API 等独立调用的账单。"
+        ),
+        **governance_fields,
     )

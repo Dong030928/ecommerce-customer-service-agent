@@ -42,6 +42,7 @@ from context.runtime_context import (
     build_runtime_context_view,
 )
 from cost.observer import build_cost_summary
+from cost.governance import CostGovernanceContext
 from degradation.fallbacks import (
     degradation_from_tool_records,
     fallback_message,
@@ -643,11 +644,17 @@ class CustomerServiceAgent:
             session_id,
             "cost_recorded",
             {
-                "path_type": route_plan.execution_route,
-                "tool_call_count": len(response.tool_calls),
+                "schema_version": response.cost_summary.schema_version,
+                "path_type": response.cost_summary.path_type,
+                "model_calls": response.cost_summary.model_calls,
+                "tool_call_count": response.cost_summary.tool_call_count,
                 "total_tokens": response.cost_summary.total_tokens,
                 "token_source": response.cost_summary.token_source,
-                "degraded": response.degraded,
+                "request_budget": response.cost_summary.tokens.get("request_budget"),
+                "cache_hit": response.cost_summary.cache.get("retrieval_cache_hit"),
+                "observation_saved_tokens": response.cost_summary.observation_compression.get("saved_tokens"),
+                "cost_threshold_exceeded": response.cost_summary.degradation.get("cost_threshold_exceeded"),
+                "degraded": response.cost_summary.degradation.get("degraded", response.degraded),
             },
         )
         trace_store.add(
@@ -712,6 +719,18 @@ class CustomerServiceAgent:
             response.risk_level,
         )
         state = dict(response.session_state)
+        model_calls = dict(response.cost_summary.model_calls)
+        model_calls["route_planner"] = int(planner_trace.model_consulted)
+        cost_summary = response.cost_summary.model_copy(
+            update={"model_calls": model_calls}
+        )
+        response = response.model_copy(update={"cost_summary": cost_summary})
+        state["cost_summary"] = cost_summary.model_dump()
+        cost_log = state.get("cost_log")
+        if isinstance(cost_log, dict) and isinstance(cost_log.get("latest"), dict):
+            latest = dict(cost_log["latest"])
+            latest["cost_summary"] = cost_summary.model_dump()
+            state["cost_log"] = {**cost_log, "latest": latest}
         memory_update, memory_snapshot = self._memory_store.update(
             request=memory_request,
             intent=response.intent,
@@ -757,7 +776,7 @@ class CustomerServiceAgent:
             response_external_texts,
         )
         sanitized_context = build_sanitized_context(safety_decision)
-        state["agent_version"] = "0.33.0"
+        state["agent_version"] = "0.34.0"
         state["runtime_context"] = runtime_context_view.model_dump()
         state["context_builder"] = context_report.model_dump()
         state["compression"] = {
@@ -798,7 +817,7 @@ class CustomerServiceAgent:
             "long_term_profile": False,
         }
         state["next_gap"] = (
-            "外部文本已支持污染标记、指令隔离和隐私脱敏；下一步建立可复盘的 Trace。"
+            "请求级成本已可观察；下一步进入综合场景演练与上线前验证。"
         )
         reasoning_summary = list(response.reasoning_summary)
         reasoning_summary.extend(
@@ -833,6 +852,9 @@ class CustomerServiceAgent:
         }
         reasoning_summary.append(
             "Trace 只记录可复盘的公开执行证据，不保存系统提示词、原始敏感数据或隐藏思维链。"
+        )
+        reasoning_summary.append(
+            f"成本摘要将本轮标记为 {cost_summary.path_type}，并保留预算、缓存和边界信号；成本治理不会跳过业务事实或 HITL。"
         )
         return response.model_copy(
             update={
@@ -987,7 +1009,19 @@ class CustomerServiceAgent:
                 ),
             },
         ]
-        cost_summary = build_cost_summary(evidence_messages, answer, None)
+        cost_summary = build_cost_summary(
+            evidence_messages,
+            answer,
+            None,
+            governance=CostGovernanceContext(
+                path_type="langgraph_after_sale_workflow",
+                intent=intent_result.intent,
+                tool_calls=tool_calls,
+                citations=citations,
+                workflow=workflow,
+                degraded=degradation.degraded,
+            ),
+        )
         event = {
             "message_count": message_count,
             "intent": intent_result.intent,
@@ -1019,7 +1053,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.33.0",
+                "agent_version": "0.34.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1144,7 +1178,18 @@ class CustomerServiceAgent:
             },
             {"role": "user", "content": request.user_message},
         ]
-        cost_summary = build_cost_summary(public_messages, response_answer, None)
+        cost_summary = build_cost_summary(
+            public_messages,
+            response_answer,
+            None,
+            governance=CostGovernanceContext(
+                path_type="tool_calling_path",
+                intent=intent_result.intent,
+                tool_calls=outcome.tool_calls,
+                final_answer_model_used=outcome.used_model,
+                degraded=degradation.degraded,
+            ),
+        )
         event = {
             "message_count": message_count,
             "intent": intent_result.intent,
@@ -1184,7 +1229,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.33.0",
+                "agent_version": "0.34.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1353,6 +1398,17 @@ class CustomerServiceAgent:
             messages,
             model_answer.answer,
             model_answer.usage,
+            governance=CostGovernanceContext(
+                path_type="tool_rag_heavy_path",
+                intent=intent_result.intent,
+                tool_calls=tool_response.tool_calls,
+                citations=citations,
+                retrieval_cache=(
+                    retrieval_outcome.cache if retrieval_outcome is not None else None
+                ),
+                final_answer_model_used=model_answer.used_model,
+                degraded=degraded,
+            ),
         )
         event = {
             "message_count": message_count,
@@ -1371,7 +1427,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.33.0"
+        state["agent_version"] = "0.34.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1537,6 +1593,11 @@ class CustomerServiceAgent:
                 ],
                 answer,
                 None,
+                governance=CostGovernanceContext(
+                    path_type="security_guard_path",
+                    intent="general_chat",
+                    degraded=False,
+                ),
             )
             return self._finalize_with_hooks(
                 ChatResponse(
@@ -1553,7 +1614,7 @@ class CustomerServiceAgent:
                         "本轮请求在路由和模型调用前被安全边界阻断。",
                     ],
                     session_state={
-                        "agent_version": "0.33.0",
+                        "agent_version": "0.34.0",
                         "message_count": message_count,
                         "degradation": {},
                     },
@@ -1752,7 +1813,23 @@ class CustomerServiceAgent:
         )
 
         cost_summary = build_cost_summary(
-            messages, model_answer.answer, model_answer.usage
+            messages,
+            model_answer.answer,
+            model_answer.usage,
+            governance=CostGovernanceContext(
+                path_type=(
+                    "cached_rag_light_path"
+                    if route_plan.needs_rag and retrieval_cache.get("cache_hit")
+                    else "rag_answer_path"
+                    if route_plan.needs_rag
+                    else "general_light_path"
+                ),
+                intent=intent_result.intent,
+                citations=citations,
+                retrieval_cache=retrieval_cache,
+                final_answer_model_used=model_answer.used_model,
+                degraded=degraded,
+            ),
         )
         event = {
             "message_count": message_count,
@@ -1817,7 +1894,7 @@ class CustomerServiceAgent:
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.33.0",
+            "agent_version": "0.34.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1975,7 +2052,38 @@ class CustomerServiceAgent:
                 "accepted": response.resume_result.accepted,
             },
         )
+        resume_cost = build_cost_summary(
+            [
+                {"role": "system", "content": "HITL 恢复只校验审批和业务状态，不重新调用规划或回答模型。"},
+                {"role": "user", "content": f"decision={request.decision}; status={response.status}"},
+            ],
+            response.answer,
+            None,
+            governance=CostGovernanceContext(
+                path_type="hitl_resume_path",
+                intent="refund_request",
+                workflow=response.workflow,
+                degraded=response.status == "blocked",
+            ),
+        )
+        trace_store.add(
+            request.session_id,
+            "cost_recorded",
+            {
+                "schema_version": resume_cost.schema_version,
+                "path_type": resume_cost.path_type,
+                "model_calls": resume_cost.model_calls,
+                "tool_call_count": 0,
+                "total_tokens": resume_cost.total_tokens,
+                "token_source": resume_cost.token_source,
+                "request_budget": resume_cost.tokens.get("request_budget"),
+                "cost_threshold_exceeded": resume_cost.degradation.get("cost_threshold_exceeded"),
+                "degraded": resume_cost.degradation.get("degraded"),
+            },
+        )
         state = dict(response.session_state)
+        state["cost_summary"] = resume_cost.model_dump()
+        state["next_gap"] = "HITL 恢复成本已单独记录；下一步进入综合场景演练与上线前验证。"
         state["trace"] = {
             "schema_version": TRACE_SCHEMA_VERSION,
             "event_count": len(trace_store.list(request.session_id)),

@@ -616,6 +616,21 @@ class CostSummary(BaseModel):
     estimated_total_cost_cny: float = Field(ge=0)
     context_chars: int = Field(ge=0)
     pricing_note: str
+    schema_version: Literal["cost_summary_v1"] = "cost_summary_v1"
+    cost_profile: str = "request_observation"
+    path_type: str = "unclassified"
+    model_calls: dict[str, int] = Field(default_factory=dict)
+    accounting_scope: dict[str, Any] = Field(default_factory=dict)
+    tool_call_count: int = Field(default=0, ge=0)
+    business_tool_call_count: int = Field(default=0, ge=0)
+    rag: dict[str, Any] = Field(default_factory=dict)
+    tokens: dict[str, int] = Field(default_factory=dict)
+    prompt_fragments: dict[str, Any] = Field(default_factory=dict)
+    cache: dict[str, Any] = Field(default_factory=dict)
+    observation_compression: dict[str, Any] = Field(default_factory=dict)
+    workflow: dict[str, Any] = Field(default_factory=dict)
+    degradation: dict[str, Any] = Field(default_factory=dict)
+    safety_boundary: dict[str, bool] = Field(default_factory=dict)
 
 
 class MemoryDecision(BaseModel):
