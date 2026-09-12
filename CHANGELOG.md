@@ -2,7 +2,6 @@
 
 ## 0.35.0
 
-- 选择性吸收 lesson41 的最终收口能力，不覆盖现有持续演进架构。
 - 将原始查询向量、改写查询向量和关键词三路候选改为加权 RRF 融合，公开融合版本、路线排名、贡献值与最终候选顺序。
 - 检索缓存键纳入融合算法版本和参数，避免不同融合语义错误复用候选结果。
 - 普通商品、订单、FAQ 和活动请求优先采用模型 RoutePlan；退款/退货、退款进度与安全边界继续使用确定性守卫。
@@ -13,7 +12,7 @@
 
 ## 0.34.0
 
-- 合并 lesson40 的请求级成本治理，在既有 token 与人民币金额估算上增加 `cost_summary_v1` 结构化维度。
+- 请求级成本治理摘要，在既有 token 与人民币金额估算上增加 `cost_summary_v1` 结构化维度。
 - 区分普通、RAG、缓存 RAG、Tool、Tool+RAG、Workflow、安全阻断及 HITL 恢复路径。
 - 新增逻辑模型阶段、工具次数、真实 RAG 缓存、Prompt 片段和公开 Observation 压缩信号。
 - 新增 `AGENT_REQUEST_TOKEN_BUDGET` 请求预算与超限告警，非法或非正配置回退到安全默认值。
@@ -33,7 +32,7 @@
 
 ## 0.32.0
 
-- 合并 lesson39 的失败归因与反馈闭环能力，新增 `POST /feedback/submit`。
+- 失败归因与反馈闭环能力，新增 `POST /feedback/submit`。
 - 将反馈绑定到已有会话 Trace 与可选 Eval 结果，按 Prompt、RAG、Tool、Context、Workflow 和测试期望归因。
 - 负反馈生成可执行的进程内回归用例，并自动并入后续 `/eval/run`；正向和中性反馈不回填失败用例。
 - 回填已有 case 时保留原始可复现输入、运行上下文和断言，公开响应不回显输入及 Runtime Context。
@@ -42,7 +41,7 @@
 
 ## 0.31.0
 
-- 合并 lesson38 的固定用例回归评测能力，保持单一工程目录。
+- 固定用例回归评测能力，保持单一工程目录。
 - 新增 `backend/cases.yml` 与 `POST /eval/run`，支持全量或按 `case_id` 运行。
 - 使用当前 Agent 的真实配置，检查回答、工具、引用、Trace、Workflow/HITL 与禁止输出，返回 `eval_report_v1`。
 - 将课程工具、引用和审批断言适配为当前工程协议，不注入课程订单快照。
@@ -169,7 +168,7 @@
 - 新增 LangGraph `StateGraph` 售后工作流，将高风险路径从普通 Agent 编排中隔离；
 - 固定执行售后类型识别、订单校验、物流读取、政策检索、资格判断和提交前停止节点；
 - 新增公开 `WorkflowSummary`，返回工作流 ID、类型、状态、当前节点、待处理动作和节点历史；
-- 复用 lesson26 的确定性只读工具、真实 Hybrid RAG 政策 citations 与结构化 `HighRiskAssessment`；
+- 复用确定性只读工具、真实 Hybrid RAG 政策 citations 与结构化 `HighRiskAssessment`；
 - 订单校验失败时通过条件边提前停止，缺订单号或动作类型不明时停在澄清边界；
 - 工作流最终固定停在 `stop_before_submission`，不创建申请、不执行退款、不完成人工审批；
 - 保持 `workflow_started=true` 与 `write_executed=false` 的可观察边界，尚不提供 checkpoint 或 `resume_token`；
@@ -270,7 +269,7 @@
 - 缺少订单号时返回当前用户候选订单，不让模型替用户选择；
 - 增加按月份筛选当前用户候选订单的只读工具，并标记上下文截断状态；
 - 商品工具返回多个匹配时保留本轮 `tool_calls`，转为工具后结构化澄清；
-- 保留 lesson18 的 LangChain Tool Calling、真实业务接口、Hybrid RAG 与 citations 链路；
+- 保留 LangChain Tool Calling、真实业务接口、Hybrid RAG 与 citations 链路；
 - 新增模型参数注入防护、Runtime 身份隔离、工具前/工具后澄清和月份候选回归测试。
 
 ## 0.12.0
