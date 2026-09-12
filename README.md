@@ -147,7 +147,3 @@ python -m unittest discover -s tests -v
 - 公共 Trace 只记录脱敏后的执行证据，不暴露系统提示词、原始工具结果、凭证或隐藏思维链。
 - 成本摘要用于工程观测，不等同于模型平台账单；当前未汇总 Embedding、Reranker 和业务 API 的全部费用。
 - 管理与评测接口尚无独立鉴权，公开部署前需要补充认证、RBAC、限流、审计和持久化基础设施。
-
-## 演进记录
-
-项目不复制多个 lesson 目录，每次迭代都保持可运行并通过规范化 Git 提交记录。版本变化详见 [CHANGELOG.md](CHANGELOG.md)。
