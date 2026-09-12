@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from collections.abc import Mapping
 from typing import Any
 
 from api.schemas import (
@@ -27,6 +28,12 @@ from rag.index_cache import (
     retrieval_cache_key,
     store_retrieval_cache_entry,
 )
+from rag.fusion import (
+    DEFAULT_RRF_K,
+    FUSION_VERSION,
+    fuse_rankings,
+    validate_rrf_parameters,
+)
 from rag.knowledge_base import (
     load_knowledge_chunks,
     query_asks_for_history,
@@ -46,6 +53,76 @@ class HybridRetrievalOutcome:
     keyword_hits: list[KnowledgeHit]
     candidates: list[KnowledgeHit]
     cache: dict[str, Any]
+    fusion: dict[str, Any]
+
+
+RRF_ROUTES = ("original_vector", "rewritten_vector", "keyword")
+
+
+def fuse_candidate_routes(
+    original_hits: list[KnowledgeHit],
+    rewritten_hits: list[KnowledgeHit],
+    keyword_hits: list[KnowledgeHit],
+    *,
+    top_k: int = HYBRID_CANDIDATE_K,
+    rrf_k: int = DEFAULT_RRF_K,
+    route_weights: Mapping[str, float] | None = None,
+) -> tuple[list[KnowledgeHit], dict[str, Any]]:
+    """Fuse three route-local rankings and retain their auditable evidence."""
+
+    if type(top_k) is not int or top_k <= 0:
+        raise ValueError("top_k 必须是正整数。")
+    weights = validate_rrf_parameters(RRF_ROUTES, rrf_k, route_weights)
+    route_hits = {
+        "original_vector": original_hits,
+        "rewritten_vector": rewritten_hits,
+        "keyword": keyword_hits,
+    }
+    route_rankings = {
+        route: [hit.chunk.chunk_id for hit in hits]
+        for route, hits in route_hits.items()
+    }
+    ranked = fuse_rankings(route_rankings, k=rrf_k, weights=weights)
+    merged = merge_candidates(
+        original_hits,
+        rewritten_hits,
+        keyword_hits,
+        top_k=max(1, sum(len(hits) for hits in route_hits.values())),
+    )
+    by_chunk_id = {hit.chunk.chunk_id: hit for hit in merged}
+    fused_candidates: list[KnowledgeHit] = []
+    source_scores: dict[str, Any] = {}
+    for rank, fused in enumerate(ranked, start=1):
+        hit = by_chunk_id.get(fused.chunk_id)
+        if hit is None:
+            continue
+        source_scores[fused.chunk_id] = {
+            "vector": hit.vector_score,
+            "keyword": hit.keyword_score,
+            "rrf": fused.score,
+            "fusion_rank": rank,
+            "sources": hit.retrieval_sources,
+            "contributions": fused.contributions,
+        }
+        if len(fused_candidates) < top_k:
+            fused_candidates.append(
+                hit.model_copy(
+                    update={
+                        "fusion_score": fused.score,
+                        "fusion_rank": rank,
+                        "fusion_contributions": fused.contributions,
+                    }
+                )
+            )
+    return fused_candidates, {
+        "fusion_method": "rrf",
+        "fusion_version": FUSION_VERSION,
+        "rrf_k": rrf_k,
+        "route_weights": weights,
+        "route_rankings": route_rankings,
+        "fused_chunk_ids": [hit.chunk_id for hit in ranked],
+        "source_scores": source_scores,
+    }
 
 
 def retrieval_cache_policy(plan: RetrievalPlan) -> dict[str, Any]:
@@ -139,15 +216,29 @@ def retrieve_hybrid_candidates(
     intent: Intent,
     *,
     embedding_client: EmbeddingClient | None = None,
+    rrf_k: int = DEFAULT_RRF_K,
+    route_weights: Mapping[str, float] | None = None,
 ) -> HybridRetrievalOutcome:
-    """Run pre-retrieval planning and merge all three retrieval routes."""
+    """Run pre-retrieval planning and RRF-fuse all three retrieval routes."""
 
     plan = build_retrieval_plan(rewrite, intent)
     index = get_knowledge_index()
     embedding_identity = read_embedding_cache_identity(embedding_client)
     identity_hash = hashlib.sha256(embedding_identity.encode("utf-8")).hexdigest()[:12]
     policy = retrieval_cache_policy(plan)
-    cache_key = retrieval_cache_key(plan, index, embedding_identity)
+    weights = validate_rrf_parameters(RRF_ROUTES, rrf_k, route_weights)
+    fusion_config: dict[str, object] = {
+        "fusion_version": FUSION_VERSION,
+        "rrf_k": rrf_k,
+        "route_weights": weights,
+        "top_k": HYBRID_CANDIDATE_K,
+    }
+    cache_key = retrieval_cache_key(
+        plan,
+        index,
+        embedding_identity,
+        fusion_config,
+    )
     if policy["cacheable"]:
         cached = get_retrieval_cache_entry(cache_key)
         if cached is not None:
@@ -165,6 +256,7 @@ def retrieve_hybrid_candidates(
                     "entry_count": cache_entry_count(),
                     "embedding_identity_hash": identity_hash,
                 },
+                fusion=cached.fusion,
             )
     original_hits = retrieve_candidates(
         rewrite.original_query,
@@ -185,11 +277,13 @@ def retrieve_hybrid_candidates(
         else []
     )
     keyword_hits = retrieve_keyword_candidates(plan, index=index)
-    candidates = merge_candidates(
+    candidates, fusion = fuse_candidate_routes(
         original_hits,
         rewritten_hits,
         keyword_hits,
         top_k=HYBRID_CANDIDATE_K,
+        rrf_k=rrf_k,
+        route_weights=weights,
     )
     if policy["cacheable"]:
         store_retrieval_cache_entry(
@@ -202,6 +296,7 @@ def retrieve_hybrid_candidates(
                 rewritten_vector_hits=rewritten_hits,
                 keyword_hits=keyword_hits,
                 candidates=candidates,
+                fusion=fusion,
             ),
         )
     return HybridRetrievalOutcome(
@@ -218,4 +313,5 @@ def retrieve_hybrid_candidates(
             "entry_count": cache_entry_count(),
             "embedding_identity_hash": identity_hash,
         },
+        fusion=fusion,
     )

@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 import yaml
 
-from api.schemas import ChatRequest, ChatResponse, EvalCaseResult, EvalRunResponse
+from api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ChatResumeRequest,
+    ChatResumeResponse,
+    EvalCaseResult,
+    EvalRunResponse,
+)
 from config.settings import CASES_PATH
 from observability.trace import TraceEventNormalizer, TraceStore, trace_store
 from safety.prompt_guard import sanitize_text
@@ -19,12 +26,15 @@ from safety.prompt_guard import sanitize_text
 class ChatAgent(Protocol):
     def chat(self, request: ChatRequest) -> ChatResponse: ...
 
+    def resume(self, request: ChatResumeRequest) -> ChatResumeResponse: ...
+
 
 class EvalCase(BaseModel):
     """Reject misspelled expectations rather than silently skipping checks."""
 
     model_config = ConfigDict(extra="forbid")
     case_id: str = Field(min_length=1)
+    case_type: Literal["chat", "resume"] = "chat"
     user_message: str = Field(min_length=1)
     runtime_user_id: str = "U1001"
     runtime_nickname: str | None = None
@@ -40,6 +50,11 @@ class EvalCase(BaseModel):
     expected_session_state: list[str] = Field(default_factory=list)
     expected_response: dict[str, Any] = Field(default_factory=dict)
     forbidden_text: list[str] = Field(default_factory=list)
+    decision: Literal["approved", "rejected", "needs_more_info"] = "approved"
+    repeat_resume: bool = False
+    resume_token_override: str | None = None
+    reviewer_id: str = "eval-reviewer"
+    reviewer_role: str = "after_sale_manager"
     source: str = "fixed_suite"
 
 
@@ -100,6 +115,8 @@ class EvalRunner:
                         "runtime_member_level", "runtime_risk_level", "runtime_context",
                     }),
                 ))
+                if case.case_type == "resume":
+                    response = self._resume_case(case, response)
                 result = self._grade(case, result, response)
             except Exception as exc:
                 # A failing service must fail its case, not abort or pass the suite.
@@ -125,6 +142,45 @@ class EvalRunner:
                 ],
                 "boundary": "固定断言检查配置的真实 Agent 链路；业务与模型用例依赖运行环境，未使用 LLM-as-judge。",
             },
+        )
+
+    def _resume_case(
+        self,
+        case: EvalCase,
+        pending: ChatResponse,
+    ) -> ChatResponse:
+        """Resume a real checkpoint and fold public resume evidence into grading."""
+
+        if pending.workflow is None or pending.workflow.resume_token is None:
+            raise ValueError("恢复评测必须先产生带 resume_token 的待审批工作流。")
+        request = ChatResumeRequest(
+            session_id=pending.session_id,
+            workflow_id=pending.workflow.workflow_id,
+            resume_token=case.resume_token_override or pending.workflow.resume_token,
+            reviewer_id=case.reviewer_id,
+            reviewer_role=case.reviewer_role,
+            decision=case.decision,
+        )
+        resumed = self.agent.resume(request)
+        if case.repeat_resume:
+            resumed = self.agent.resume(request)
+        state = dict(resumed.session_state)
+        state.update(
+            {
+                "resume_status": resumed.status,
+                "resume_result": resumed.resume_result.model_dump(),
+                "business_recheck": resumed.business_recheck,
+            }
+        )
+        return pending.model_copy(
+            update={
+                "answer": resumed.answer,
+                "workflow": resumed.workflow,
+                "approval": resumed.approval,
+                "needs_human_approval": resumed.status == "paused",
+                "degraded": resumed.status == "blocked",
+                "session_state": state,
+            }
         )
 
     def _grade(self, case: EvalCase, result: EvalCaseResult, response: ChatResponse) -> EvalCaseResult:

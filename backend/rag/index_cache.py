@@ -17,6 +17,7 @@ from api.schemas import (
 from config.settings import RAG_RETRIEVAL_CACHE_MAX_ENTRIES
 from rag.knowledge_base import load_knowledge_chunks
 from rag.query_rewrite import normalize_query
+from rag.fusion import FUSION_VERSION
 
 
 _CACHE_LOCK = RLock()
@@ -110,6 +111,7 @@ def retrieval_cache_key(
     plan: RetrievalPlan,
     index: KnowledgeIndex,
     embedding_identity: str,
+    fusion_config: dict[str, object] | None = None,
 ) -> str:
     """Hash all inputs that can change retrieval candidates."""
 
@@ -122,6 +124,8 @@ def retrieval_cache_key(
             "original_query": normalize_query(plan.original_query),
             "rewritten_query": normalize_query(plan.rewritten_query),
             "keyword_terms": plan.keyword_terms,
+            "fusion_version": FUSION_VERSION,
+            "fusion_config": fusion_config or {},
         },
         ensure_ascii=False,
         sort_keys=True,

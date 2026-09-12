@@ -2,19 +2,19 @@
 
 面向电商客服场景的 AI Agent 后端。项目以单一可运行仓库持续演进，覆盖知识问答、实时业务查询、高风险售后审批、多轮会话、安全治理、可观测性与评测反馈闭环。
 
-当前版本：`v0.34.0`
+当前版本：`v0.35.0`
 
 ## 核心能力
 
 | 能力 | 实现 |
 | --- | --- |
-| 智能路由 | `TaskPlanner` 在 General、RAG、Tool、Tool + RAG、Workflow 之间选择执行路径 |
-| 知识问答 | OpenAI-compatible Embedding、向量/关键词混合召回、Reranker、引用与低置信兜底 |
+| 智能路由 | 普通请求模型优先，安全/退款边界规则兜底，在 General、RAG、Tool、Tool + RAG、Workflow 间选择路径 |
+| 知识问答 | OpenAI-compatible Embedding、三路 RRF 融合、Reranker、引用与低置信兜底 |
 | 实时查询 | LangChain Tool Calling 对接订单、物流、商品、库存和退款进度等只读接口 |
 | 高风险售后 | LangGraph 编排退款/退货流程，通过 checkpoint、恢复令牌和幂等键实现 HITL |
 | 多轮上下文 | Session Memory、可信 Runtime Context、上下文压缩与订单/商品指代消歧 |
 | 安全与可观测 | Prompt Injection 防护、隐私脱敏、公共 Trace、错误分类与安全降级 |
-| 质量闭环 | 固定用例评测、负反馈向量匹配、失败归因、人工审核后回填回归用例 |
+| 质量闭环 | 固定用例与 HITL 恢复评测、负反馈向量匹配、失败归因、人工审核后回填回归用例 |
 | 成本治理 | 按请求路径汇总模型阶段、token、工具/RAG 使用情况、预算告警与成本估算 |
 
 ## 工作方式

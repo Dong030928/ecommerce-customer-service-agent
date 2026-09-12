@@ -65,7 +65,7 @@ def create_router(
         index = get_knowledge_index()
         return {
             "status": "ok",
-            "version": "0.34.0",
+            "version": "0.35.0",
             "rag_index_version": index.version,
             "rag_index_chunks": index.chunk_count,
         }

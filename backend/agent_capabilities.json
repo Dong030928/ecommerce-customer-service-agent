@@ -1,13 +1,13 @@
 {
   "schema_version": "agent_capabilities_v1",
   "release": {
-    "id": "v0.34.0-cost-governance",
-    "title": "Request Cost Governance",
-    "summary": "在既有 token 与金额估算上增加路径分层、模型阶段、RAG 缓存、Prompt 片段、Observation 压缩、预算告警和 HITL 恢复成本信号。"
+    "id": "v0.35.0-final-convergence",
+    "title": "Final Retrieval and Evaluation Convergence",
+    "summary": "以普通请求模型优先路由、三路 RRF 检索融合和 HITL 恢复回归完成最终能力收口。"
   },
   "agent": {
     "name": "E-commerce Customer Service Agent",
-    "version": "0.34.0"
+    "version": "0.35.0"
   },
   "endpoints": {
     "health": true,
@@ -36,6 +36,8 @@
     "grounded_model_answer": true,
     "structured_intent": true,
     "route_planner": true,
+    "ordinary_route_model_first": true,
+    "deterministic_risk_guards": true,
     "route_plan": true,
     "planner_trace": true,
     "tool_candidates": true,
@@ -54,6 +56,8 @@
     "query_rewrite": true,
     "reranker": true,
     "hybrid_rag": true,
+    "reciprocal_rank_fusion": true,
+    "rrf_route_evidence": true,
     "keyword_retrieval": true,
     "pre_retrieval": true,
     "rag_index_cache": true,
@@ -169,6 +173,7 @@
     "evaluation": true,
     "eval_report_v1": true,
     "fixed_case_regression": true,
+    "hitl_resume_evaluation": true,
     "feedback_submit": true,
     "failure_attribution": true,
     "eval_case_backfill": true,

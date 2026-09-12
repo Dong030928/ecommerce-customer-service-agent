@@ -49,7 +49,7 @@ def build_task_planner_messages(
 
 
 class TaskPlannerModelClient:
-    """Request a structured draft only when deterministic rules are uncertain."""
+    """Request a structured ordinary-route draft behind deterministic guards."""
 
     def __init__(
         self,

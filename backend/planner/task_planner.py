@@ -54,7 +54,7 @@ ALLOWED_FALLBACK_POLICIES = {
     "clarify_or_model_plan",
 }
 MIN_MODEL_CONFIDENCE = 0.65
-RULE_CONFIDENCE_THRESHOLD = 0.85
+DETERMINISTIC_GUARD_INTENTS = {"refund_request", "refund_status_query"}
 
 
 class TaskPlanner:
@@ -77,7 +77,12 @@ class TaskPlanner:
             rule_plan,
         )
         candidates = self._candidate_summaries(safe_rule_plan)
-        if safe_rule_plan.confidence >= RULE_CONFIDENCE_THRESHOLD:
+        guarded = (
+            initial_override
+            or safe_rule_plan.requires_workflow
+            or safe_rule_plan.intent in DETERMINISTIC_GUARD_INTENTS
+        )
+        if guarded or self._model_client is None:
             constrained = self._constrain_required_tools(
                 safe_rule_plan,
                 candidates,
@@ -91,11 +96,7 @@ class TaskPlanner:
                 safety_override=initial_override,
             )
 
-        payload = (
-            self._model_client.plan(request.user_message, candidates)
-            if self._model_client is not None
-            else None
-        )
+        payload = self._model_client.plan(request.user_message, candidates)
         if payload is not None:
             model_plan = self._plan_from_model(
                 payload,

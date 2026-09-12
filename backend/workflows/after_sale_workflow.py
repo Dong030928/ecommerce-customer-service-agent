@@ -78,7 +78,7 @@ class AfterSaleWorkflow:
         self._resumer = WorkflowResumer(
             store=self._checkpoint_store,
             policy_service=policy_service,
-            agent_version="0.34.0",
+            agent_version="0.35.0",
         )
         self.graph = self._build_graph()
 

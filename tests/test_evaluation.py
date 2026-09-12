@@ -93,6 +93,82 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(client.calls, ["get_order", "get_logistics"])
         self.assertEqual(report.results[0].actual_citations, [])
 
+    def test_resume_case_reuses_real_checkpoint_and_grades_idempotency(self):
+        client = workflow_fixtures.WorkflowEcommerceClient()
+        agent = CustomerServiceAgent(
+            embedding_client=EvaluationEmbeddingFixture(),
+            answer_api_key="",
+            after_sale_policy_service=AfterSalePolicyService(ToolRuntime(client)),
+        )
+        runner = self.runner(
+            [
+                {
+                    "case_id": "resume-approved-idempotent",
+                    "case_type": "resume",
+                    "user_message": (
+                        f"订单 {workflow_fixtures.ORDER_ID} 还没发货，直接退款"
+                    ),
+                    "repeat_resume": True,
+                    "expected_trace_events": [
+                        "human_approval_required",
+                        "workflow_resumed",
+                        "human_approval_resolved",
+                    ],
+                    "expected_session_state": [
+                        "resume_status=completed",
+                        "resume_result.accepted=true",
+                        "resume_result.idempotent_replay=true",
+                        "business_recheck.passed=true",
+                    ],
+                    "forbidden_text": ["已到账"],
+                }
+            ],
+            agent,
+        )
+
+        report = runner.run()
+
+        self.assertEqual(
+            (report.total, report.passed, report.failed),
+            (1, 1, 0),
+            report.model_dump(),
+        )
+
+    def test_resume_case_can_assert_invalid_token_boundary(self):
+        client = workflow_fixtures.WorkflowEcommerceClient()
+        agent = CustomerServiceAgent(
+            embedding_client=EvaluationEmbeddingFixture(),
+            answer_api_key="",
+            after_sale_policy_service=AfterSalePolicyService(ToolRuntime(client)),
+        )
+        runner = self.runner(
+            [
+                {
+                    "case_id": "resume-invalid-token",
+                    "case_type": "resume",
+                    "user_message": (
+                        f"订单 {workflow_fixtures.ORDER_ID} 还没发货，直接退款"
+                    ),
+                    "resume_token_override": "invalid-token",
+                    "expected_session_state": [
+                        "resume_status=blocked",
+                        "resume_result.accepted=false",
+                        "resume_result.reason=resume_token 不匹配，不能恢复这个审批流程。",
+                    ],
+                    "forbidden_text": ["审批通过", "已到账"],
+                }
+            ],
+            agent,
+        )
+
+        report = runner.run()
+
+        self.assertEqual(
+            (report.total, report.passed, report.failed),
+            (1, 1, 0),
+            report.model_dump(),
+        )
+
     def test_all_dimensions_fail_with_explicit_categories(self):
         response = CustomerServiceAgent().chat(ChatRequest(
             session_id="negative-fixture", runtime_user_id="U1001", user_message="你好"

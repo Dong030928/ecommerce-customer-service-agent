@@ -564,6 +564,7 @@ class CustomerServiceAgent:
                 },
             )
         if response.citations:
+            rag_state = response.session_state.get("rag", {})
             trace_store.add(
                 session_id,
                 "rag_pre_retrieved",
@@ -571,6 +572,12 @@ class CustomerServiceAgent:
                     "hit_count": len(response.citations),
                     "retrieval_stage": "hybrid_rag_after_rerank",
                     "chunk_ids": [item.chunk_id for item in response.citations],
+                    "fusion_method": rag_state.get("fusion_method"),
+                    "fusion_version": rag_state.get("fusion_version"),
+                    "rrf_k": rag_state.get("rrf_k"),
+                    "route_weights": rag_state.get("route_weights"),
+                    "route_rankings": rag_state.get("route_rankings"),
+                    "fused_chunk_ids": rag_state.get("fused_chunk_ids"),
                 },
             )
         for index, record in enumerate(response.tool_calls, start=1):
@@ -776,7 +783,7 @@ class CustomerServiceAgent:
             response_external_texts,
         )
         sanitized_context = build_sanitized_context(safety_decision)
-        state["agent_version"] = "0.34.0"
+        state["agent_version"] = "0.35.0"
         state["runtime_context"] = runtime_context_view.model_dump()
         state["context_builder"] = context_report.model_dump()
         state["compression"] = {
@@ -912,6 +919,7 @@ class CustomerServiceAgent:
                 "citation_count": len(citations),
                 "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
                 "rerank_mode": reranked.mode,
+                **retrieval.fusion,
                 "retrieval_error": None,
             }
         except (
@@ -1053,7 +1061,7 @@ class CustomerServiceAgent:
                 "符合条件的退款或退货工作流暂停在人工审批边界；恢复只能通过受控接口，且不直接执行真实业务写入。",
             ],
             session_state={
-                "agent_version": "0.34.0",
+                "agent_version": "0.35.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1229,7 +1237,7 @@ class CustomerServiceAgent:
             cost_summary=cost_summary,
             reasoning_summary=reasoning_summary,
             session_state={
-                "agent_version": "0.34.0",
+                "agent_version": "0.35.0",
                 "message_count": message_count,
                 "runtime_context": {
                     "user_id": request.runtime_user_id,
@@ -1427,7 +1435,7 @@ class CustomerServiceAgent:
             events.append(event)
 
         state = tool_response.session_state
-        state["agent_version"] = "0.34.0"
+        state["agent_version"] = "0.35.0"
         state["model_answer"] = model_answer.model_dump()
         state["degradation"] = {
             "degraded": degraded,
@@ -1454,6 +1462,19 @@ class CustomerServiceAgent:
             ),
             "cache": (
                 retrieval_outcome.cache if retrieval_outcome is not None else None
+            ),
+            **(
+                retrieval_outcome.fusion
+                if retrieval_outcome is not None
+                else {
+                    "fusion_method": "rrf",
+                    "fusion_version": None,
+                    "rrf_k": None,
+                    "route_weights": {},
+                    "route_rankings": {},
+                    "fused_chunk_ids": [],
+                    "source_scores": {},
+                }
             ),
             "candidate_count": (
                 len(retrieval_outcome.candidates)
@@ -1614,7 +1635,7 @@ class CustomerServiceAgent:
                         "本轮请求在路由和模型调用前被安全边界阻断。",
                     ],
                     session_state={
-                        "agent_version": "0.34.0",
+                        "agent_version": "0.35.0",
                         "message_count": message_count,
                         "degradation": {},
                     },
@@ -1711,6 +1732,15 @@ class CustomerServiceAgent:
             "entry_count": 0,
             "embedding_identity_hash": None,
         }
+        retrieval_fusion: dict = {
+            "fusion_method": "rrf",
+            "fusion_version": None,
+            "rrf_k": None,
+            "route_weights": {},
+            "route_rankings": {},
+            "fused_chunk_ids": [],
+            "source_scores": {},
+        }
         reranked_hits: list[KnowledgeHit] = []
         reliable_hits: list[KnowledgeHit] = []
         retrieval_error: str | None = None
@@ -1730,6 +1760,7 @@ class CustomerServiceAgent:
                 retrieval_plan = retrieval_outcome.plan
                 retrieval_index = retrieval_outcome.index
                 retrieval_cache = retrieval_outcome.cache
+                retrieval_fusion = retrieval_outcome.fusion
                 original_candidates = retrieval_outcome.original_vector_hits
                 rewritten_candidates = retrieval_outcome.rewritten_vector_hits
                 keyword_candidates = retrieval_outcome.keyword_hits
@@ -1887,14 +1918,14 @@ class CustomerServiceAgent:
         reasoning_summary = [
             "后端保持 user_message 与可信 runtime_* 分离，外部模型只接收业务问题。",
             "系统沿用规则优先、轻量分类模型兜底，得到稳定的结构化 intent。",
-            f"系统保留用户原话，生成检索改写与 pre-retrieval 场景计划；三路合并后得到 {len(candidates)} 个候选。",
+            f"系统保留用户原话，生成检索改写与 pre-retrieval 场景计划；三路 RRF 融合后得到 {len(candidates)} 个候选。",
             f"知识索引版本为 {retrieval_index.version if retrieval_index else 'not_applicable'}；稳定检索缓存命中为 {retrieval_cache['cache_hit']}。",
             f"候选经过 {rerank_mode} 重排，再用 {LOW_CONFIDENCE_THRESHOLD} 门槛选出 {len(reliable_hits)} 个可靠命中。",
             f"最终可靠知识生成 {len(citations)} 条 citation；可信 Runtime Context 未进入外部检索或回答请求。",
             f"本轮 token 来源为 {cost_summary.token_source}，总 token 为 {cost_summary.total_tokens}。",
         ]
         session_state = {
-            "agent_version": "0.34.0",
+            "agent_version": "0.35.0",
             "message_count": message_count,
             "runtime_context": {
                 "user_id": request.runtime_user_id,
@@ -1913,7 +1944,7 @@ class CustomerServiceAgent:
             },
             "rag": {
                 "mode": "hybrid_rag_with_versioned_index_cache",
-                "retrieval_strategy": "versioned_index_then_cached_hybrid_candidates_then_rerank",
+                "retrieval_strategy": "versioned_index_then_three_route_rrf_then_rerank",
                 "vector_search": True,
                 "keyword_search": True,
                 "embedding_model": read_embedding_model_name(self._embedding_client),
@@ -1936,6 +1967,7 @@ class CustomerServiceAgent:
                     else None
                 ),
                 "cache": retrieval_cache,
+                **retrieval_fusion,
                 "realtime_gap": realtime_gap,
                 "rewrite": rewrite.model_dump(),
                 "plan": retrieval_plan.model_dump() if retrieval_plan else None,
@@ -1974,6 +2006,9 @@ class CustomerServiceAgent:
                     hit.chunk.chunk_id: {
                         "vector": hit.vector_score,
                         "keyword": hit.keyword_score,
+                        "rrf": hit.fusion_score,
+                        "fusion_rank": hit.fusion_rank,
+                        "fusion_contributions": hit.fusion_contributions,
                         "rerank": hit.rerank_score,
                         "final": hit.score,
                         "sources": hit.retrieval_sources,

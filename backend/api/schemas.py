@@ -514,6 +514,11 @@ class KnowledgeHit(BaseModel):
     keyword_score: float | None = Field(default=None, ge=0.0, le=1.0)
     retrieval_sources: list[str] = Field(default_factory=list)
     matched_keywords: list[str] = Field(default_factory=list)
+    fusion_score: float | None = Field(default=None, ge=0.0)
+    fusion_rank: int | None = Field(default=None, ge=1)
+    fusion_contributions: dict[str, dict[str, float | int]] = Field(
+        default_factory=dict
+    )
     rerank_score: float | None = Field(default=None, ge=0.0, le=1.0)
     rerank_reasons: list[str] = Field(default_factory=list)
 
@@ -549,6 +554,7 @@ class RetrievalCacheEntry(BaseModel):
     rewritten_vector_hits: list[KnowledgeHit]
     keyword_hits: list[KnowledgeHit]
     candidates: list[KnowledgeHit]
+    fusion: dict[str, Any] = Field(default_factory=dict)
 
 
 class Citation(BaseModel):

@@ -133,6 +133,47 @@ class TaskPlannerTests(unittest.TestCase):
         self.assertEqual(model.calls, [])
         self.assertIn("不在轻路径执行", trace.public_reason)
 
+    def test_ordinary_high_confidence_request_prefers_model_route(self) -> None:
+        model = DraftModelClient(
+            {
+                "intent": "promotion_consult",
+                "needs_rag": True,
+                "needs_business_tools": False,
+                "rag_query": "618 优惠券叠加规则",
+                "confidence": 0.91,
+                "required_tools": [],
+                "knowledge_domains": ["promotion", "member"],
+                "risk_level": "low",
+                "requires_workflow": False,
+            }
+        )
+
+        plan, trace = self._plan("618 活动能叠券吗？", TaskPlanner(model))
+
+        self.assertEqual(plan.source, "classifier")
+        self.assertEqual(plan.execution_route, "rag")
+        self.assertEqual(plan.knowledge_domains, ["promotion", "member"])
+        self.assertTrue(trace.model_consulted)
+        self.assertEqual(len(model.calls), 1)
+
+    def test_refund_status_keeps_deterministic_read_only_guard(self) -> None:
+        model = DraftModelClient(
+            {
+                "intent": "general_chat",
+                "needs_rag": False,
+                "needs_business_tools": False,
+                "confidence": 0.99,
+            }
+        )
+
+        plan, trace = self._plan("查询退款申请 RF-1001 的进度", TaskPlanner(model))
+
+        self.assertEqual(plan.intent, "refund_status_query")
+        self.assertEqual(plan.execution_route, "tool")
+        self.assertEqual(plan.required_tools, ["get_refund_status"])
+        self.assertFalse(trace.model_consulted)
+        self.assertEqual(model.calls, [])
+
     def test_low_confidence_model_draft_is_allow_list_constrained(self) -> None:
         model = DraftModelClient(
             {
@@ -234,7 +275,7 @@ class TaskPlannerTests(unittest.TestCase):
             response.session_state["route_plan"],
             response.route_plan.model_dump(),
         )
-        self.assertEqual(response.session_state["agent_version"], "0.34.0")
+        self.assertEqual(response.session_state["agent_version"], "0.35.0")
 
     def test_agent_workflow_signal_enters_graph_without_claiming_write(self) -> None:
         response = CustomerServiceAgent().chat(

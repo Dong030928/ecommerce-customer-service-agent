@@ -173,9 +173,36 @@ class HybridRagTests(unittest.TestCase):
 
         self.assertFalse(first.cache["cache_hit"])
         self.assertTrue(second.cache["cache_hit"])
+        self.assertEqual(first.fusion["fusion_method"], "rrf")
+        self.assertEqual(first.fusion["fusion_version"], "chunk_rrf_v1")
+        self.assertEqual(first.fusion["rrf_k"], 60)
+        self.assertTrue(first.fusion["route_rankings"]["original_vector"])
         self.assertEqual(first.index.version, second.index.version)
         self.assertEqual(first.candidates, second.candidates)
         self.assertEqual(len(embedding_client.seen_texts), calls_after_first)
+
+    def test_rrf_configuration_uses_separate_cache_namespace(self) -> None:
+        embedding_client = FakeEmbeddingClient()
+        rewrite = rewrite_retrieval_query(
+            "耳机会员价还能叠加优惠券吗？",
+            "promotion_consult",
+        )
+
+        first = retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+        )
+        second = retrieve_hybrid_candidates(
+            rewrite,
+            "promotion_consult",
+            embedding_client=embedding_client,
+            rrf_k=20,
+        )
+
+        self.assertFalse(first.cache["cache_hit"])
+        self.assertFalse(second.cache["cache_hit"])
+        self.assertNotEqual(first.cache["cache_key"], second.cache["cache_key"])
 
     def test_realtime_business_query_is_never_put_in_retrieval_cache(self) -> None:
         embedding_client = FakeEmbeddingClient()
