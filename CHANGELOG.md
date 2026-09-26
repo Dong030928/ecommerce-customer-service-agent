@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- 使用 LangChain DocumentLoader 接入 Markdown、TXT、文字版 PDF 和普通 DOCX；保留现有 Markdown 的 frontmatter、章节、关键词及稳定 chunk ID。
+- 非 Markdown 知识文件须提供显式的政策元数据清单，PDF 引用保留页码；无文本、缺清单和重复 ID 等情况阻断索引构建。
+- 保持现有切块、Embedding、三路召回、RRF 和重排算法不变，并新增真实格式的离线解析与缓存版本回归测试。
+
 ## 0.35.0
 
 - 将原始查询向量、改写查询向量和关键词三路候选改为加权 RRF 融合，公开融合版本、路线排名、贡献值与最终候选顺序。

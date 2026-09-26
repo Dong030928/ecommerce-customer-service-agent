@@ -452,7 +452,7 @@ class ClarificationPlan(BaseModel):
 
 
 class SourceDocument(BaseModel):
-    """Repository-local Markdown source document."""
+    """Repository-local source text with normalized policy metadata."""
 
     source_path: str
     title: str
