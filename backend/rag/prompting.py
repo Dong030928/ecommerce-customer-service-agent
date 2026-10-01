@@ -9,7 +9,7 @@ from api.schemas import (
     QueryRewrite,
     ToolObservation,
 )
-from safety.prompt_guard import sanitize_text
+from rag.parent_retrieval import evidence_text
 
 
 def build_citations(hits: list[KnowledgeHit]) -> list[Citation]:
@@ -20,10 +20,15 @@ def build_citations(hits: list[KnowledgeHit]) -> list[Citation]:
             citation_id=f"C{index}",
             source_title=hit.chunk.document_title,
             source_path=hit.chunk.source_path,
-            section=hit.chunk.section,
+            section=hit.parent.section if hit.parent is not None else hit.chunk.section,
             chunk_id=hit.chunk.chunk_id,
             score=hit.score,
-            snippet=sanitize_text(hit.chunk.text)[0],
+            snippet=evidence_text(hit),
+            parent_id=hit.parent.parent_id if hit.parent is not None else None,
+            matched_child_ids=hit.matched_child_ids or [hit.chunk.chunk_id],
+            index_version=hit.index_version,
+            page_start=(hit.parent or hit.chunk).metadata.get("page_start"),
+            page_end=(hit.parent or hit.chunk).metadata.get("page_end"),
         )
         for index, hit in enumerate(hits, start=1)
     ]
@@ -38,9 +43,9 @@ def render_rag_messages(
     """Render final evidence without including trusted runtime identity values."""
 
     evidence = "\n\n".join(
-        f"[{index}] {hit.chunk.document_title} / {hit.chunk.section}\n"
+        f"[C{index}] {hit.chunk.document_title} / {hit.chunk.section}\n"
         f"chunk_id={hit.chunk.chunk_id} score={hit.score} "
-        f"reasons={','.join(hit.rerank_reasons)}\n{sanitize_text(hit.chunk.text)[0]}"
+        f"parent_id={hit.chunk.parent_id} reasons={','.join(hit.rerank_reasons)}\n{evidence_text(hit)}"
         for index, hit in enumerate(hits, start=1)
     )
     system_content = (
@@ -74,7 +79,7 @@ def render_product_tool_rag_messages(
     )
     rag_evidence = "\n\n".join(
         f"[C{index}] {hit.chunk.document_title} / {hit.chunk.section}\n"
-        f"chunk_id={hit.chunk.chunk_id} score={hit.score}\n{sanitize_text(hit.chunk.text)[0]}"
+        f"chunk_id={hit.chunk.chunk_id} parent_id={hit.chunk.parent_id} score={hit.score}\n{evidence_text(hit)}"
         for index, hit in enumerate(hits, start=1)
     )
     return [
@@ -112,7 +117,7 @@ def build_product_tool_rag_fallback(
     answer = "实时商品信息：" + " ".join(tool_lines)
     if hits:
         knowledge_lines = [
-            f"[C{index}] {sanitize_text(hit.chunk.text)[0]}"
+            f"[C{index}] {evidence_text(hit)}"
             for index, hit in enumerate(hits, start=1)
         ]
         answer += " 知识库依据：" + " ".join(knowledge_lines)

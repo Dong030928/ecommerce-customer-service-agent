@@ -15,6 +15,7 @@ from embeddings.client import EmbeddingClient
 from rag.hybrid_retrieval import retrieve_hybrid_candidates
 from rag.query_rewrite import rewrite_retrieval_query
 from rag.reranker import rerank_candidates_lightweight
+from rag.parent_retrieval import expand_parent_evidence, evidence_text
 
 
 def load_quality_cases() -> list[RagQualityCase]:
@@ -46,8 +47,17 @@ def evaluate_quality_case(
         rewrite.rewritten_query,
         outcome.candidates,
     )
-    fallback = is_low_confidence(hits)
-    retrieved_ids = [] if fallback else [hit.chunk.chunk_id for hit in hits]
+    expansion = expand_parent_evidence(hits, outcome.index, case.question, outcome.plan.allowed_domains)
+    fallback = not expansion.hits
+    retrieved_ids = [child for hit in expansion.hits for child in hit.matched_child_ids]
+    evidence = "\n\n".join(evidence_text(hit) for hit in expansion.hits)
+    coverage = (sum(term in evidence for term in case.required_evidence_terms) / len(case.required_evidence_terms)
+                if case.required_evidence_terms else None)
+    evidence_metrics = {
+        "retrieved_parent_ids": expansion.trace["selected_parent_ids"],
+        "evidence_body_chars": expansion.trace["evidence_body_chars"],
+        "required_evidence_coverage": coverage,
+    }
     expected = set(case.expected_chunk_ids)
     retrieved = set(retrieved_ids)
 
@@ -60,6 +70,7 @@ def evaluate_quality_case(
             precision_at_k=1.0 if fallback else 0.0,
             fallback=fallback,
             passed=fallback and not retrieved_ids,
+            **evidence_metrics,
         )
 
     matched = expected & retrieved
@@ -72,7 +83,8 @@ def evaluate_quality_case(
         recall_at_k=round(recall, 3),
         precision_at_k=round(precision, 3),
         fallback=fallback,
-        passed=recall > 0 and not fallback,
+        passed=recall > 0 and not fallback and (coverage is None or coverage == 1.0),
+        **evidence_metrics,
     )
 
 

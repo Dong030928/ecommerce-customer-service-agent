@@ -116,7 +116,8 @@ class DocumentLoadingTests(unittest.TestCase):
         self.assertEqual(citation.source_path, "shipping.txt")
         self.assertEqual(citation.section, "示例政策")
 
-        index = build_knowledge_index(chunks)
+        parents, _ = knowledge_base.build_knowledge_corpus()
+        index = build_knowledge_index(chunks, parents)
         rewrite = rewrite_retrieval_query("配送物流时效", "unknown")
         plan = build_retrieval_plan(rewrite, "unknown")
         hits = retrieve_keyword_candidates(plan, index=index)
@@ -186,7 +187,8 @@ class DocumentLoadingTests(unittest.TestCase):
             write_manifest(path)
 
         with self.assertRaisesRegex(ValueError, "重复 chunk_id"):
-            build_knowledge_index(knowledge_base.load_knowledge_chunks())
+            parents, chunks = knowledge_base.build_knowledge_corpus()
+            build_knowledge_index(chunks, parents)
 
     def test_manifest_change_versions_index_and_failed_rebuild_keeps_old_snapshot(self) -> None:
         path = self.directory / "shipping.txt"

@@ -68,6 +68,7 @@ def create_router(
             "version": "0.35.0",
             "rag_index_version": index.version,
             "rag_index_chunks": index.chunk_count,
+            "rag_index_parents": len(index.parents_by_id),
         }
 
     @router.get("/capabilities")

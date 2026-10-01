@@ -59,7 +59,6 @@ from models.task_planner_client import TaskPlannerModelClient
 from observability.trace import trace_store
 from planner.task_planner import TaskPlanner
 from policies.after_sale_policy import AfterSalePolicyService
-from rag.knowledge_base import load_knowledge_chunks
 from rag.prompting import (
     build_citations,
     build_product_tool_rag_fallback,
@@ -67,8 +66,9 @@ from rag.prompting import (
     render_rag_messages,
 )
 from rag.hybrid_retrieval import retrieve_hybrid_candidates
-from rag.quality import is_low_confidence, run_rag_quality_check
-from rag.product_joint import select_product_joint_hits
+from rag.quality import run_rag_quality_check
+from rag.parent_retrieval import expand_parent_evidence
+from rag.product_joint import expand_product_joint_evidence
 from rag.query_rewrite import normalize_query, rewrite_retrieval_query
 from rag.reranker import RerankConfig, rerank_candidates
 from rag.planning import is_realtime_business_query
@@ -902,11 +902,11 @@ class CustomerServiceAgent:
                 config=self._rerank_config,
                 http_client=self._rerank_http_client,
             )
-            reliable_hits = (
-                []
-                if is_low_confidence(reranked.hits)
-                else reranked.hits[:FINAL_TOP_K]
+            expansion = expand_parent_evidence(
+                reranked.hits, retrieval.index, request.user_message,
+                retrieval.plan.allowed_domains,
             )
+            reliable_hits = expansion.hits
             citations = build_citations(reliable_hits)
             return citations, {
                 "status": "completed" if citations else "low_confidence",
@@ -919,6 +919,7 @@ class CustomerServiceAgent:
                 "citation_count": len(citations),
                 "matched_chunk_ids": [hit.chunk.chunk_id for hit in reliable_hits],
                 "rerank_mode": reranked.mode,
+                "parent_expansion": expansion.trace,
                 **retrieval.fusion,
                 "retrieval_error": None,
             }
@@ -1334,6 +1335,7 @@ class CustomerServiceAgent:
         retrieval_error: str | None = None
         retrieval_outcome = None
         rerank_outcome = None
+        parent_expansion: dict = {}
         reliable_hits: list[KnowledgeHit] = []
         try:
             retrieval_outcome = retrieve_hybrid_candidates(
@@ -1347,7 +1349,11 @@ class CustomerServiceAgent:
                 config=self._rerank_config,
                 http_client=self._rerank_http_client,
             )
-            reliable_hits = select_product_joint_hits(rerank_outcome.hits)
+            expansion = expand_product_joint_evidence(
+                rerank_outcome.hits, retrieval_outcome.index, request.user_message,
+                retrieval_outcome.plan.allowed_domains,
+            )
+            reliable_hits, parent_expansion = expansion.hits, expansion.trace
         except (
             RuntimeError,
             httpx.HTTPError,
@@ -1446,6 +1452,7 @@ class CustomerServiceAgent:
         }
         state["tool_calling"]["joint_answer"] = True
         state["rag"] = {
+            "parent_expansion": parent_expansion,
             "status": (
                 "unavailable"
                 if retrieval_error
@@ -1742,6 +1749,7 @@ class CustomerServiceAgent:
             "source_scores": {},
         }
         reranked_hits: list[KnowledgeHit] = []
+        parent_expansion: dict = {}
         reliable_hits: list[KnowledgeHit] = []
         retrieval_error: str | None = None
         rerank_mode = "skipped_general_chat"
@@ -1776,8 +1784,12 @@ class CustomerServiceAgent:
                 rerank_model = rerank_outcome.model
                 rerank_error = rerank_outcome.error
                 realtime_gap = is_realtime_business_query(request.user_message)
-                low_confidence = realtime_gap or is_low_confidence(reranked_hits)
-                reliable_hits = [] if low_confidence else reranked_hits[:FINAL_TOP_K]
+                if not realtime_gap:
+                    expansion = expand_parent_evidence(
+                        reranked_hits, retrieval_index, request.user_message, retrieval_plan.allowed_domains,
+                    )
+                    reliable_hits, parent_expansion = expansion.hits, expansion.trace
+                low_confidence = realtime_gap or not reliable_hits
                 if realtime_gap:
                     answer_path = "realtime_business_tool_required"
                 else:
@@ -1872,7 +1884,7 @@ class CustomerServiceAgent:
         chunks = (
             list(retrieval_index.chunks_by_id.values())
             if retrieval_index is not None
-            else load_knowledge_chunks()
+            else []
         )
         top_score = reranked_hits[0].score if reranked_hits else 0.0
         if not route_plan.needs_rag:
@@ -1944,13 +1956,14 @@ class CustomerServiceAgent:
             },
             "rag": {
                 "mode": "hybrid_rag_with_versioned_index_cache",
-                "retrieval_strategy": "versioned_index_then_three_route_rrf_then_rerank",
+                "retrieval_strategy": "child_three_route_rrf_then_rerank_then_parent_expansion",
                 "vector_search": True,
                 "keyword_search": True,
                 "embedding_model": read_embedding_model_name(self._embedding_client),
                 "candidate_k": CANDIDATE_K,
                 "hybrid_candidate_k": HYBRID_CANDIDATE_K,
-                "final_top_k": FINAL_TOP_K,
+                "final_top_k": parent_expansion.get("parent_top_k", FINAL_TOP_K),
+                "parent_expansion": parent_expansion,
                 "score_threshold": RETRIEVAL_SCORE_THRESHOLD,
                 "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
                 "document_count": len({chunk.source_path for chunk in chunks}),
@@ -1961,6 +1974,8 @@ class CustomerServiceAgent:
                         "fingerprint": retrieval_index.fingerprint,
                         "chunk_count": retrieval_index.chunk_count,
                         "document_count": retrieval_index.document_count,
+                        "parent_count": len(retrieval_index.parents_by_id),
+                        "splitting_config": retrieval_index.splitting_config,
                         "inverted_term_count": len(retrieval_index.inverted_index),
                     }
                     if retrieval_index

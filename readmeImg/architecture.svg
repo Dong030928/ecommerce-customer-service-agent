@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1100" viewBox="0 0 1536 1100" role="img" aria-labelledby="title description">
   <title id="title">电商智能客服系统架构</title>
-  <desc id="description">上半部分是在线客服请求：入口、安全与上下文、任务规划，再进入常规对话、知识检索、只读工具、工具与知识联合、售后工作流五条路径，最终输出安全响应与结构化证据。下半部分是与在线请求分离的知识索引构建：多格式本地文档经过 LangChain Loader、元数据和章节或页校验、切块，进入进程内索引；检索时按需生成并缓存向量。</desc>
+  <desc id="description">上半部分是在线客服请求：入口、安全与上下文、任务规划，再进入五条路径并输出结构化证据。知识检索只召回子块，经 RRF 和重排后从同一快照回填可靠父块，整块控制预算并提供引用。下半部分是知识准备：多格式文件经过 Loader、元数据和页码偏移校验、父子分块，构建包含父子正文和映射的进程内版本索引；只有子块按需生成向量。</desc>
   <defs>
     <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 1 1 L 9 5 L 1 9 Z" fill="#2456a6"/>
@@ -30,7 +30,7 @@
 
   <rect width="1536" height="1100" fill="#f6f9fc"/>
   <text class="title" x="768" y="62" text-anchor="middle">电商智能客服 · 系统架构</text>
-  <text class="subtitle" x="768" y="96" text-anchor="middle">在线路由执行  /  多格式知识接入  /  可追溯的质量闭环</text>
+  <text class="subtitle" x="768" y="96" text-anchor="middle">在线路由执行  /  子块定位 · 父块回填  /  可追溯的质量闭环</text>
 
   <!-- 在线服务：每轮客服请求走此链路。 -->
   <rect x="24" y="121" width="1488" height="558" rx="19" fill="#ffffff" stroke="#a8c2e5" stroke-width="2"/>
@@ -71,10 +71,11 @@
   <rect x="340" y="327" width="272" height="231" rx="14" fill="#effaf9" stroke="#75c2c3" stroke-width="2"/>
   <rect x="351" y="340" width="250" height="44" rx="9" fill="#d9f1f0"/>
   <text class="lane-title" x="476" y="370" text-anchor="middle">② 知识检索</text>
-  <text class="lane-body" x="476" y="419" text-anchor="middle">原问向量 · 改写向量</text>
-  <text class="lane-body" x="476" y="450" text-anchor="middle">关键词 → 加权 RRF</text>
-  <text class="lane-body" x="476" y="481" text-anchor="middle">重排 · 引用 · 置信度</text>
-  <text class="lane-note" x="476" y="526" text-anchor="middle">读取下方进程内知识索引</text>
+  <text class="lane-body" x="476" y="413" text-anchor="middle">子块：双向量＋关键词</text>
+  <text class="lane-body" x="476" y="442" text-anchor="middle">RRF → 重排 → 可靠性</text>
+  <text class="lane-body" x="476" y="471" text-anchor="middle">父块回填 · 去重 · 引用</text>
+  <text class="lane-note" x="476" y="507" text-anchor="middle">最多 2 父块 / 正文 3200 字符</text>
+  <text class="lane-note" x="476" y="536" text-anchor="middle">同快照回填 · 不截断例外</text>
 
   <rect x="632" y="327" width="272" height="231" rx="14" fill="#f3f8ff" stroke="#8bb6e7" stroke-width="2"/>
   <rect x="643" y="340" width="250" height="44" rx="9" fill="#e2efff"/>
@@ -88,7 +89,7 @@
   <rect x="935" y="340" width="250" height="44" rx="9" fill="#e8e5ff"/>
   <text class="lane-title" x="1060" y="370" text-anchor="middle">④ 工具与知识联合</text>
   <text class="lane-body" x="1060" y="426" text-anchor="middle">实时商品事实</text>
-  <text class="lane-body" x="1060" y="459" text-anchor="middle">＋ 稳定知识规则</text>
+  <text class="lane-body" x="1060" y="459" text-anchor="middle">＋ 商品 / 活动父块证据</text>
   <text class="lane-note" x="1060" y="519" text-anchor="middle">合并证据并说明限制条件</text>
 
   <rect x="1216" y="327" width="272" height="231" rx="14" fill="#fff8ee" stroke="#e3b06e" stroke-width="2"/>
@@ -130,25 +131,25 @@
   <text class="ingest-title" x="768" y="795" text-anchor="middle">元数据与结构校验</text>
   <text class="ingest-body" x="768" y="830" text-anchor="middle">MD：frontmatter / H2 / 注释</text>
   <text class="ingest-body" x="768" y="857" text-anchor="middle">其他：.meta.yaml / PDF 页码</text>
-  <text class="ingest-body" x="768" y="884" text-anchor="middle">校验清单字段与重复 ID</text>
+  <text class="ingest-body" x="768" y="884" text-anchor="middle">来源偏移 · 政策生命周期</text>
 
   <rect x="924" y="760" width="272" height="148" rx="13" fill="#f0fbfa" stroke="#89c6c7" stroke-width="2"/>
-  <text class="ingest-title" x="1060" y="795" text-anchor="middle">章节 / 页内切块</text>
-  <text class="ingest-body" x="1060" y="830" text-anchor="middle">420 字 · 80 字重叠</text>
-  <text class="ingest-body" x="1060" y="857" text-anchor="middle">保留稳定 chunk ID</text>
-  <text class="ingest-body" x="1060" y="884" text-anchor="middle">携带来源与引用信息</text>
+  <text class="ingest-title" x="1060" y="795" text-anchor="middle">有界父子分块</text>
+  <text class="ingest-body" x="1060" y="830" text-anchor="middle">父块 1600 / 重叠 160</text>
+  <text class="ingest-body" x="1060" y="857" text-anchor="middle">子块 420 / 重叠 80</text>
+  <text class="ingest-body" x="1060" y="884" text-anchor="middle">H2 / 段落 · PDF 跨页定位</text>
 
   <rect x="1216" y="760" width="272" height="148" rx="13" fill="#f0fbfa" stroke="#89c6c7" stroke-width="2"/>
   <text class="ingest-title" x="1352" y="795" text-anchor="middle">进程内知识索引</text>
-  <text class="ingest-body" x="1352" y="830" text-anchor="middle">SHA-256 切块指纹</text>
-  <text class="ingest-body" x="1352" y="857" text-anchor="middle">倒排索引 · 按需向量化</text>
-  <text class="ingest-body" x="1352" y="884" text-anchor="middle">失败不替换旧快照</text>
+  <text class="ingest-body" x="1352" y="830" text-anchor="middle">父子正文 / 映射 / 配置指纹</text>
+  <text class="ingest-body" x="1352" y="857" text-anchor="middle">子块倒排 · 仅子块向量化</text>
+  <text class="ingest-body" x="1352" y="884" text-anchor="middle">完整校验 · 原子换快照</text>
 
   <path class="flow-teal" d="M 321 834 H 332"/>
   <path class="flow-teal" d="M 613 834 H 624"/>
   <path class="flow-teal" d="M 905 834 H 916"/>
   <path class="flow-teal" d="M 1197 834 H 1208"/>
-  <text x="768" y="944" text-anchor="middle" fill="#467278" font-size="17">上方知识检索与联合路径按需读取索引；向量结果缓存在进程内，修改文档后需重启或受控重建。</text>
+  <text x="768" y="944" text-anchor="middle" fill="#467278" font-size="17">三条 RAG 路径共用父块回填；父块不单独召回。缺映射则兜底，重建失败保留旧快照；仍为进程内索引。</text>
 
   <rect x="24" y="983" width="1488" height="95" rx="16" fill="#eef3fa" stroke="#b4c8df" stroke-width="2"/>
   <text class="footer-title" x="47" y="1015">外部依赖与横向治理</text>

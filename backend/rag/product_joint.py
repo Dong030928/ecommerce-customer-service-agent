@@ -1,35 +1,17 @@
-"""Balanced evidence selection for product Tool + RAG answers."""
+"""Balanced parent evidence for product Tool + RAG answers."""
 
 from __future__ import annotations
 
-from api.schemas import KnowledgeHit
-from config.settings import FINAL_TOP_K, LOW_CONFIDENCE_THRESHOLD
+from api.schemas import KnowledgeHit, KnowledgeIndex
+from rag.parent_retrieval import ParentExpansionOutcome, expand_parent_evidence
 
 
-def select_product_joint_hits(hits: list[KnowledgeHit]) -> list[KnowledgeHit]:
-    """Keep both product knowledge and promotion policy when both are reliable."""
+def expand_product_joint_evidence(
+    hits: list[KnowledgeHit], index: KnowledgeIndex, query: str, allowed_domains: list[str],
+) -> ParentExpansionOutcome:
+    """Balance domains after parent deduplication, never truncate children first."""
 
-    reliable = [
-        hit
-        for hit in hits
-        if hit.score >= LOW_CONFIDENCE_THRESHOLD
-        and hit.chunk.effective_status == "active"
-    ]
-    selected: list[KnowledgeHit] = []
-    for domain in ("product", "promotion"):
-        match = next(
-            (
-                hit
-                for hit in reliable
-                if str(hit.chunk.metadata.get("domain") or "") == domain
-            ),
-            None,
-        )
-        if match is not None:
-            selected.append(match)
-    for hit in reliable:
-        if len(selected) >= FINAL_TOP_K:
-            break
-        if hit not in selected:
-            selected.append(hit)
-    return selected[:FINAL_TOP_K]
+    return expand_parent_evidence(
+        hits, index, query, allowed_domains,
+        preferred_domains=("product", "promotion"), active_only=True,
+    )

@@ -8,10 +8,11 @@ from typing import Any
 
 import yaml
 
-from api.schemas import KnowledgeChunk, KnowledgeSection, SourceDocument
+from api.schemas import KnowledgeChunk, KnowledgeParent, KnowledgeSection, SourceDocument, SourceSpan
 from config.settings import CHUNK_OVERLAP, CHUNK_SIZE, KNOWLEDGE_DIR
 from rag.planning import SCENE_DOMAINS
 from rag.source_loaders import SUPPORTED_SUFFIXES, load_source_file
+from rag.parent_child import ChunkingConfig, normalize_text, split_ranges, split_section
 
 
 EXTERNAL_DOMAINS = frozenset(domain for domains in SCENE_DOMAINS.values() for domain in domains)
@@ -139,6 +140,9 @@ def load_source_documents() -> list[SourceDocument]:
             continue
 
         metadata = external_metadata or {}
+        bodies: list[str] = []
+        spans: list[SourceSpan] = []
+        offset = 0
         for item in loaded:
             page_number = item.metadata.get("page")
             if path.suffix.lower() == ".pdf":
@@ -149,20 +153,20 @@ def load_source_documents() -> list[SourceDocument]:
                 page_number = None
                 if len(loaded) != 1:
                     raise ValueError(f"非 PDF 文件产生了多个文本单元：{path.name}")
-            document_metadata = {
-                **metadata,
-                "source_format": path.suffix.lower().lstrip("."),
-            }
-            if page_number is not None:
-                document_metadata["page_number"] = page_number
-            documents.append(
-                SourceDocument(
-                    source_path=path.name,
-                    title=metadata["title"],
-                    metadata=document_metadata,
-                    body=item.page_content,
-                )
-            )
+            body = normalize_text(item.page_content)
+            if not body:
+                raise ValueError(f"知识文件没有可索引的正文：{path.name}")
+            if bodies:
+                offset += 2
+            spans.append(SourceSpan(start=offset, end=offset + len(body), page_number=page_number))
+            bodies.append(body)
+            offset += len(body)
+        document_metadata = {**metadata, "source_format": path.suffix.lower().lstrip(".")}
+        if path.suffix.lower() == ".pdf" and len(loaded) == 1:
+            document_metadata["page_number"] = 1
+        documents.append(SourceDocument(source_path=path.name, title=metadata["title"],
+                                        metadata=document_metadata, body="\n\n".join(bodies),
+                                        source_spans=spans))
     return documents
 
 
@@ -172,7 +176,7 @@ def _as_string_list(value: Any) -> list[str]:
 
 
 def parse_sections(document: SourceDocument) -> list[KnowledgeSection]:
-    """Preserve Markdown H2 metadata or expose a plain-text/PDF page section."""
+    """Preserve Markdown H2 metadata or expose normalized text with page spans."""
 
     source_format = document.metadata.get("source_format")
     if source_format:
@@ -192,6 +196,7 @@ def parse_sections(document: SourceDocument) -> list[KnowledgeSection]:
                 ),
                 effective_status=document.metadata["effective_status"],
                 text=document.body,
+                source_spans=document.source_spans,
                 metadata={
                     **document.metadata,
                     "source_path": document.source_path,
@@ -210,7 +215,7 @@ def parse_sections(document: SourceDocument) -> list[KnowledgeSection]:
 
     def flush_section() -> None:
         nonlocal section_index, current_lines, current_title, current_metadata
-        text = "\n".join(line for line in current_lines if line.strip()).strip()
+        text = normalize_text("\n".join(current_lines))
         if not text:
             current_lines = []
             current_metadata = {}
@@ -277,69 +282,46 @@ def split_into_chunks(
         raise ValueError("chunk_size 必须大于 0。")
     if overlap < 0 or overlap >= chunk_size:
         raise ValueError("overlap 必须大于等于 0 且小于 chunk_size。")
-    normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-    if not normalized:
-        return []
-    if len(normalized) <= chunk_size:
-        return [normalized]
-
-    step = chunk_size - overlap
-    chunks: list[str] = []
-    start = 0
-    while start < len(normalized):
-        end = min(len(normalized), start + chunk_size)
-        chunks.append(normalized[start:end])
-        if end == len(normalized):
-            break
-        start += step
-    return chunks
+    normalized = normalize_text(text)
+    return [normalized[start:end] for start, end in split_ranges(normalized, chunk_size, overlap)]
 
 
 def build_knowledge_chunks(
-    chunk_size: int = CHUNK_SIZE,
-    overlap: int = CHUNK_OVERLAP,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list[KnowledgeChunk]:
     """Build stable, source-aware chunks from all knowledge documents."""
 
+    config = ChunkingConfig.from_env()
+    return build_knowledge_corpus(ChunkingConfig(
+        parent_size=config.parent_size, parent_overlap=config.parent_overlap,
+        child_size=config.child_size if chunk_size is None else chunk_size,
+        child_overlap=config.child_overlap if overlap is None else overlap,
+    ))[1]
+
+
+def build_knowledge_corpus(
+    config: ChunkingConfig | None = None,
+) -> tuple[list[KnowledgeParent], list[KnowledgeChunk]]:
+    """Build the entire parent/child snapshot before making it visible to queries."""
+    config = config or ChunkingConfig.from_env()
+    parents: list[KnowledgeParent] = []
     chunks: list[KnowledgeChunk] = []
     for document in load_source_documents():
         before_document = len(chunks)
         for section in parse_sections(document):
-            section_chunks = split_into_chunks(section.text, chunk_size, overlap)
-            for chunk_index, chunk_text in enumerate(section_chunks, start=1):
-                base_chunk_id = section.chunk_id or (
-                    f"{Path(section.source_path).stem}-s{section.section_index}"
-                )
-                chunk_id = (
-                    base_chunk_id
-                    if len(section_chunks) == 1
-                    else f"{base_chunk_id}-c{chunk_index}"
-                )
-                chunks.append(
-                    KnowledgeChunk(
-                        chunk_id=chunk_id,
-                        document_title=section.document_title,
-                        source_path=section.source_path,
-                        section=section.section,
-                        keywords=section.keywords,
-                        effective_status=section.effective_status,
-                        text=chunk_text,
-                        metadata={
-                            **section.metadata,
-                            "chunk_index": chunk_index,
-                            "chunk_count": len(section_chunks),
-                        },
-                    )
-                )
+            section_parents, section_chunks = split_section(section, config)
+            parents.extend(section_parents)
+            chunks.extend(section_chunks)
         if len(chunks) == before_document:
             raise ValueError(f"知识文件没有可索引的正文：{document.source_path}")
-    return chunks
+    return parents, chunks
 
 
 def load_knowledge_chunks() -> list[KnowledgeChunk]:
     """Build the current knowledge chunk collection from supported sources."""
 
-    return build_knowledge_chunks()
+    return build_knowledge_corpus()[1]
 
 
 def query_asks_for_history(query: str) -> bool:

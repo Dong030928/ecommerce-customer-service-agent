@@ -25,7 +25,7 @@ from rag.index_cache import (  # noqa: E402
     rebuild_knowledge_index,
     reset_index_and_cache,
 )
-from rag.knowledge_base import load_knowledge_chunks  # noqa: E402
+from rag.knowledge_base import build_knowledge_corpus  # noqa: E402
 from rag.planning import build_retrieval_plan  # noqa: E402
 from rag.quality import run_rag_quality_check  # noqa: E402
 from rag.query_rewrite import rewrite_retrieval_query  # noqa: E402
@@ -234,12 +234,15 @@ class HybridRagTests(unittest.TestCase):
         )
         original_index = get_knowledge_index()
         self.assertGreater(cache_entry_count(), 0)
-        changed_chunks = load_knowledge_chunks()
+        parents, changed_chunks = build_knowledge_corpus()
+        new_text = changed_chunks[0].text + " 测试版知识变更。"
         changed_chunks[0] = changed_chunks[0].model_copy(
-            update={"text": changed_chunks[0].text + " 测试版知识变更。"}
+            update={"text": new_text, "parent_end": len(new_text)}
         )
+        parents = [parent.model_copy(update={"text": new_text})
+                   if parent.parent_id == changed_chunks[0].parent_id else parent for parent in parents]
 
-        rebuilt = rebuild_knowledge_index(changed_chunks)
+        rebuilt = rebuild_knowledge_index(changed_chunks, parents)
 
         self.assertNotEqual(original_index.version, rebuilt.version)
         self.assertEqual(cache_entry_count(), 0)

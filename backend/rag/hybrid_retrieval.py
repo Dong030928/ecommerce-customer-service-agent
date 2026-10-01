@@ -35,7 +35,6 @@ from rag.fusion import (
     validate_rrf_parameters,
 )
 from rag.knowledge_base import (
-    load_knowledge_chunks,
     query_asks_for_history,
     should_include_chunk_for_query,
 )
@@ -168,9 +167,8 @@ def retrieve_keyword_candidates(
 
     asks_for_history = query_asks_for_history(plan.original_query)
     hits: list[KnowledgeHit] = []
-    source_chunks = (
-        index.chunks_by_id.values() if index is not None else load_knowledge_chunks()
-    )
+    resolved_index = index or get_knowledge_index()
+    source_chunks = resolved_index.chunks_by_id.values()
     for chunk in source_chunks:
         if not should_include_chunk_for_query(chunk, asks_for_history):
             continue
@@ -206,6 +204,7 @@ def retrieve_keyword_candidates(
                 keyword_score=keyword_score,
                 retrieval_sources=["keyword"],
                 matched_keywords=matched,
+                index_version=resolved_index.version,
             )
         )
     return sorted(hits, key=lambda hit: hit.keyword_score or 0.0, reverse=True)[:top_k]

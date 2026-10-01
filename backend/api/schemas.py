@@ -451,6 +451,14 @@ class ClarificationPlan(BaseModel):
     model_name: str | None = None
 
 
+class SourceSpan(BaseModel):
+    """Half-open offsets in normalized text, optionally located on a PDF page."""
+
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    page_number: int | None = Field(default=None, ge=1)
+
+
 class SourceDocument(BaseModel):
     """Repository-local source text with normalized policy metadata."""
 
@@ -458,6 +466,7 @@ class SourceDocument(BaseModel):
     title: str
     metadata: dict[str, Any]
     body: str
+    source_spans: list[SourceSpan] = Field(default_factory=list)
 
 
 class KnowledgeSection(BaseModel):
@@ -472,6 +481,21 @@ class KnowledgeSection(BaseModel):
     effective_status: str = "active"
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+
+
+class KnowledgeParent(BaseModel):
+    """Bounded answer context; never independently embedded or recalled."""
+
+    parent_id: str
+    document_title: str
+    source_path: str
+    section: str
+    keywords: list[str] = Field(default_factory=list)
+    effective_status: str = "active"
+    text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    source_spans: list[SourceSpan] = Field(default_factory=list)
 
 
 class KnowledgeChunk(BaseModel):
@@ -485,6 +509,10 @@ class KnowledgeChunk(BaseModel):
     effective_status: str = "active"
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    parent_id: str | None = None
+    parent_start: int = Field(default=0, ge=0)
+    parent_end: int | None = Field(default=None, gt=0)
+    source_spans: list[SourceSpan] = Field(default_factory=list)
 
 
 class VectorRecord(BaseModel):
@@ -503,6 +531,8 @@ class KnowledgeIndex(BaseModel):
     document_count: int = Field(ge=0)
     chunks_by_id: dict[str, KnowledgeChunk]
     inverted_index: dict[str, list[str]]
+    parents_by_id: dict[str, KnowledgeParent] = Field(default_factory=dict)
+    splitting_config: dict[str, int] = Field(default_factory=dict)
 
 
 class KnowledgeHit(BaseModel):
@@ -521,6 +551,9 @@ class KnowledgeHit(BaseModel):
     )
     rerank_score: float | None = Field(default=None, ge=0.0, le=1.0)
     rerank_reasons: list[str] = Field(default_factory=list)
+    parent: KnowledgeParent | None = None
+    matched_child_ids: list[str] = Field(default_factory=list)
+    index_version: str | None = None
 
 
 class QueryRewrite(BaseModel):
@@ -567,6 +600,11 @@ class Citation(BaseModel):
     chunk_id: str
     score: float = Field(ge=0.0, le=1.0)
     snippet: str
+    parent_id: str | None = None
+    matched_child_ids: list[str] = Field(default_factory=list)
+    index_version: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 class RagQualityCase(BaseModel):
@@ -576,6 +614,7 @@ class RagQualityCase(BaseModel):
     question: str
     expected_chunk_ids: list[str]
     must_fallback: bool = False
+    required_evidence_terms: list[str] = Field(default_factory=list)
 
 
 class RagQualityCaseResult(BaseModel):
@@ -588,6 +627,9 @@ class RagQualityCaseResult(BaseModel):
     precision_at_k: float = Field(ge=0.0, le=1.0)
     fallback: bool
     passed: bool
+    retrieved_parent_ids: list[str] = Field(default_factory=list)
+    evidence_body_chars: int = Field(default=0, ge=0)
+    required_evidence_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class RagQualitySummary(BaseModel):

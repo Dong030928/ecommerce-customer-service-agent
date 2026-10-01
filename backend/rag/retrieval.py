@@ -94,10 +94,11 @@ def retrieve_candidates(
 ) -> list[KnowledgeHit]:
     """Retrieve the wider vector candidate set used by the reranker."""
 
+    resolved_index = index or get_knowledge_index()
     query_embedding = embed_text(query, embedding_client)
     asks_for_history = query_asks_for_history(query)
     hits: list[KnowledgeHit] = []
-    for record in get_vector_store(embedding_client, index):
+    for record in get_vector_store(embedding_client, resolved_index):
         if not should_include_chunk_for_query(record.chunk, asks_for_history):
             continue
         domain = str(record.chunk.metadata.get("domain") or "")
@@ -112,6 +113,7 @@ def retrieve_candidates(
                     score=rounded_score,
                     vector_score=rounded_score,
                     retrieval_sources=[source],
+                    index_version=resolved_index.version,
                 )
             )
     return sorted(
