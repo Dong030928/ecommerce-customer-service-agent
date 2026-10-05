@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1100" viewBox="0 0 1536 1100" role="img" aria-labelledby="title description">
   <title id="title">电商智能客服系统架构</title>
-  <desc id="description">上半部分是在线客服请求：入口、安全与上下文、任务规划，再进入五条路径并输出结构化证据。知识检索只召回子块，经 RRF 和重排后从同一快照回填可靠父块，整块控制预算并提供引用。下半部分是知识准备：多格式文件经过 Loader、元数据和页码偏移校验、父子分块，构建包含父子正文和映射的进程内版本索引；只有子块按需生成向量。</desc>
+  <desc id="description">上半部分是在线客服请求：入口、安全与上下文、任务规划，再进入五条路径并输出结构化证据。知识检索只召回子块，经 RRF 和重排后从同一快照回填可靠父块，整块控制预算并提供引用。售后资格核验后通过 LangGraph 原生 interrupt 等待审批；Resume 校验后恢复原图，复查事实并防重记录模拟申请，图快照与业务审批分别持久化到 SQLite。下半部分是知识准备：多格式文件经过 Loader、元数据和页码偏移校验、父子分块，构建包含父子正文和映射的进程内版本索引；只有子块按需生成向量。</desc>
   <defs>
     <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 1 1 L 9 5 L 1 9 Z" fill="#2456a6"/>
@@ -47,7 +47,7 @@
   <text class="stage-body" x="586" y="245" text-anchor="middle">请求校验 · 会话标识</text>
   <rect x="776" y="182" width="348" height="78" rx="13" fill="#eefaf9" stroke="#77babd" stroke-width="2"/>
   <text class="stage-title" x="950" y="216" text-anchor="middle">安全扫描与上下文</text>
-  <text class="stage-body" x="950" y="245" text-anchor="middle">可信身份 · 会话记忆 · 压缩</text>
+  <text class="stage-body" x="950" y="245" text-anchor="middle">身份通道 · 会话记忆 · 安全边界</text>
   <rect x="1140" y="182" width="348" height="78" rx="13" fill="#f2f2ff" stroke="#9f9ae0" stroke-width="2"/>
   <text class="stage-title" x="1314" y="216" text-anchor="middle">意图识别与任务规划</text>
   <text class="stage-body" x="1314" y="245" text-anchor="middle">模型路由 · 风险规则约束</text>
@@ -95,10 +95,11 @@
   <rect x="1216" y="327" width="272" height="231" rx="14" fill="#fff8ee" stroke="#e3b06e" stroke-width="2"/>
   <rect x="1227" y="340" width="250" height="44" rx="9" fill="#ffecd0"/>
   <text class="lane-title" x="1352" y="370" text-anchor="middle">⑤ 售后工作流</text>
-  <text class="lane-body" x="1352" y="418" text-anchor="middle">LangGraph 核验事实/资格</text>
-  <text class="lane-body" x="1352" y="450" text-anchor="middle">暂停 → 人工审批 → 恢复</text>
-  <text class="lane-body" x="1352" y="482" text-anchor="middle">仅生成模拟售后申请</text>
-  <text x="1352" y="526" text-anchor="middle" fill="#ad3e29" font-size="16" font-weight="700">不执行真实退款或退货</text>
+  <text class="lane-body" x="1352" y="412" text-anchor="middle">事实 / 资格 → interrupt</text>
+  <text class="lane-body" x="1352" y="441" text-anchor="middle">人工审批 → Resume 校验</text>
+  <text class="lane-body" x="1352" y="470" text-anchor="middle">恢复原图 → 复查 → 防重</text>
+  <text class="lane-note" x="1352" y="503" text-anchor="middle">SQLite 图快照＋审批记录</text>
+  <text x="1352" y="536" text-anchor="middle" fill="#ad3e29" font-size="16" font-weight="700">模拟申请 · 不执行真实退款</text>
 
   <path class="flow-blue" d="M 184 559 V 598"/>
   <path class="flow-blue" d="M 476 559 V 598"/>
@@ -153,7 +154,7 @@
 
   <rect x="24" y="983" width="1488" height="95" rx="16" fill="#eef3fa" stroke="#b4c8df" stroke-width="2"/>
   <text class="footer-title" x="47" y="1015">外部依赖与横向治理</text>
-  <text class="footer-body" x="47" y="1047">模型服务：对话 / Embedding / 可选重排</text>
-  <text class="footer-body" x="543" y="1047">电商业务 API：实时事实 / 只读查询</text>
+  <text class="footer-body" x="47" y="1047">模型：对话 / 向量 / 可选重排 · 业务 API：只读</text>
+  <text class="footer-body" x="543" y="1047">SQLite：售后恢复 · 单进程 · 非真实支付</text>
   <text class="footer-body" x="1040" y="1047">安全降级 / 脱敏轨迹 / 成本 / 评测反馈</text>
 </svg>

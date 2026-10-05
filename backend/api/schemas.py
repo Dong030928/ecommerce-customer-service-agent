@@ -213,7 +213,7 @@ class HighRiskAssessment(BaseModel):
 
 
 class WorkflowSummary(BaseModel):
-    """Public-safe LangGraph execution summary without resumable state."""
+    """Public projection, never the complete persisted LangGraph State."""
 
     workflow_id: str
     workflow_type: AfterSaleWorkflowType
@@ -243,7 +243,7 @@ class ApprovalRequest(BaseModel):
 
 
 class ChatResumeRequest(BaseModel):
-    """Dedicated authenticated-gateway contract for resuming HITL review."""
+    """HITL Resume contract; reviewer identity must come from a trusted gateway."""
 
     session_id: str
     workflow_id: str

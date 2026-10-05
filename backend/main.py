@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from typing import Callable
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.customer_service_agent import CustomerServiceAgent
 from api.routes import create_router
+from config.settings import workflow_storage_paths
+from state.native_checkpoint import WorkflowPersistence
 
 
-agent = CustomerServiceAgent()
-
-
-def create_app() -> FastAPI:
+def create_app(
+    *,
+    agent_factory: Callable[[WorkflowPersistence], CustomerServiceAgent] | None = None,
+    persistence_factory: Callable[[], WorkflowPersistence] | None = None,
+) -> FastAPI:
     """Assemble the FastAPI application while keeping the entry point thin."""
 
-    app = FastAPI(title="E-commerce Customer Service Agent", version="0.35.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        persistence = (persistence_factory() if persistence_factory is not None
+                       else WorkflowPersistence.sqlite(*workflow_storage_paths()))
+        try:
+            agent = (agent_factory(persistence) if agent_factory is not None
+                     else CustomerServiceAgent(workflow_persistence=persistence))
+            app.state.agent = agent
+            yield
+        finally:
+            persistence.close()
+            app.state.agent = None
+
+    app = FastAPI(title="E-commerce Customer Service Agent", version="0.35.0", lifespan=lifespan)
 
     # The first version is intended for local development and API verification.
     app.add_middleware(
@@ -26,7 +45,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.include_router(create_router(lambda: agent))
+    app.include_router(create_router(lambda: app.state.agent))
     return app
 
 

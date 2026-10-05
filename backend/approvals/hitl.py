@@ -46,6 +46,6 @@ def build_approval_request(
         decision_options=["approved", "rejected", "needs_more_info"],
         boundary=(
             "当前只创建待审批请求并暂停工作流；普通聊天不是审批通道，"
-            "也尚未开放 /chat/resume。"
+            "审批通过 /chat/resume 校验后恢复原生工作流，不代表支付退款完成。"
         ),
     )

@@ -93,6 +93,20 @@ def api_key_is_missing(api_key: str | None) -> bool:
     return api_key is None or api_key.strip() in PLACEHOLDER_API_KEYS
 
 
+def workflow_storage_paths() -> tuple[Path, Path]:
+    """Resolve workflow stores relative to the repository, not the shell cwd."""
+    load_project_env()
+    root = BACKEND_DIR.parent
+    paths = []
+    for name, default in (
+        ("AGENT_WORKFLOW_CHECKPOINT_PATH", ".runtime/after_sale_checkpoints.sqlite3"),
+        ("AGENT_WORKFLOW_APPROVAL_STORE_PATH", ".runtime/after_sale_approvals.sqlite3"),
+    ):
+        path = Path(os.getenv(name, default)).expanduser()
+        paths.append((path if path.is_absolute() else root / path).resolve())
+    return paths[0], paths[1]
+
+
 def env_flag_enabled(name: str, default: bool = False) -> bool:
     """Read a conventional boolean environment flag."""
 

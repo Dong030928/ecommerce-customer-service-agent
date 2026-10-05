@@ -1,13 +1,13 @@
-"""In-process checkpoint, resume validation, business recheck, and idempotency."""
+"""Business approval snapshots and the guarded native-graph Resume protocol."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import hmac
-import secrets
-from threading import RLock
-from typing import Any
+import sqlite3
+from typing import Any, Callable, ContextManager, Literal, TYPE_CHECKING
+
+from pydantic import BaseModel
 
 from api.schemas import (
     ApprovalRequest,
@@ -22,6 +22,9 @@ from api.schemas import (
 from hooks.manager import HookManager
 from policies.after_sale_policy import AfterSalePolicyService
 
+if TYPE_CHECKING:
+    from state.approval_store import ApprovalStore
+
 
 RECHECK_FACT_KEYS = (
     "order_status",
@@ -34,15 +37,18 @@ RECHECK_FACT_KEYS = (
 )
 
 
-@dataclass
-class WorkflowCheckpoint:
+class ApprovalSnapshot(BaseModel):
+    """Business approval evidence, NOT a replacement for a graph checkpoint."""
+
+    schema_version: Literal[1] = 1
     session_id: str
     workflow_id: str
+    thread_id: str
     requester_id: str
     workflow: WorkflowSummary
     approval: ApprovalRequest
     assessment: HighRiskAssessment
-    resume_token: str
+    resume_token_digest: str
     idempotency_key: str
     frozen_fields: dict[str, Any]
 
@@ -84,83 +90,31 @@ def _requester_fingerprint(requester_id: str, salt: str) -> str:
     ).hexdigest()[:16]
 
 
-class CheckpointStore:
-    """Process-local lesson store; a durable backend can replace this interface."""
-
-    def __init__(self) -> None:
-        self._checkpoints: dict[tuple[str, str], WorkflowCheckpoint] = {}
-        self._submitted_actions: dict[str, str] = {}
-        self._lock = RLock()
-
-    def create(
-        self,
-        *,
-        request: ChatRequest,
-        workflow: WorkflowSummary,
-        approval: ApprovalRequest,
-        assessment: HighRiskAssessment,
-        tool_calls: list[ToolCallRecord],
-    ) -> WorkflowCheckpoint:
-        resume_token = secrets.token_urlsafe(32)
-        key_material = (
-            f"{workflow.workflow_id}:{assessment.action_type}:"
-            f"{assessment.order_id or 'missing'}"
-        )
-        idempotency_key = "hitl-" + hashlib.sha256(
-            key_material.encode("utf-8")
-        ).hexdigest()[:24]
-        frozen_fields = {
-            "workflow_type": workflow.workflow_type,
-            "order_id": assessment.order_id,
-            "requester_fingerprint": _requester_fingerprint(
-                request.runtime_user_id,
-                resume_token,
-            ),
-            "eligibility_status": assessment.eligibility_status,
-            "policy_citation_ids": [
-                citation.citation_id for citation in assessment.policy_basis
-            ],
-            **_safe_business_facts(tool_calls),
-        }
-        checkpoint = WorkflowCheckpoint(
-            session_id=request.session_id,
-            workflow_id=workflow.workflow_id,
-            requester_id=request.runtime_user_id,
-            workflow=workflow.model_copy(
-                update={
-                    "resume_token": resume_token,
-                    "idempotency_key": idempotency_key,
-                    "frozen_fields": frozen_fields,
-                }
-            ),
-            approval=approval,
-            assessment=assessment,
-            resume_token=resume_token,
-            idempotency_key=idempotency_key,
-            frozen_fields=frozen_fields,
-        )
-        with self._lock:
-            self._checkpoints[(request.session_id, workflow.workflow_id)] = checkpoint
-        return checkpoint
-
-    def get(self, session_id: str, workflow_id: str) -> WorkflowCheckpoint | None:
-        with self._lock:
-            return self._checkpoints.get((session_id, workflow_id))
-
-    def submitted_request(self, idempotency_key: str) -> str | None:
-        with self._lock:
-            return self._submitted_actions.get(idempotency_key)
-
-    def record_submission(self, idempotency_key: str) -> tuple[str, bool]:
-        with self._lock:
-            existing = self._submitted_actions.get(idempotency_key)
-            if existing is not None:
-                return existing, True
-            request_id = "asr-" + hashlib.sha256(
-                idempotency_key.encode("utf-8")
-            ).hexdigest()[:12]
-            self._submitted_actions[idempotency_key] = request_id
-            return request_id, False
+def build_approval_snapshot(
+    *, request: ChatRequest, workflow: WorkflowSummary, approval: ApprovalRequest,
+    assessment: HighRiskAssessment, tool_calls: list[ToolCallRecord], resume_token: str,
+) -> ApprovalSnapshot:
+    key_material = f"{workflow.workflow_id}:{assessment.action_type}:{assessment.order_id}"
+    idempotency_key = "hitl-" + hashlib.sha256(key_material.encode()).hexdigest()[:24]
+    frozen_fields = {
+        "workflow_type": workflow.workflow_type,
+        "order_id": assessment.order_id,
+        "requester_fingerprint": _requester_fingerprint(request.runtime_user_id, resume_token),
+        "eligibility_status": assessment.eligibility_status,
+        "policy_citation_ids": [item.citation_id for item in assessment.policy_basis],
+        **_safe_business_facts(tool_calls),
+    }
+    return ApprovalSnapshot(
+        session_id=request.session_id, workflow_id=workflow.workflow_id,
+        thread_id=workflow.workflow_id, requester_id=request.runtime_user_id,
+        workflow=workflow.model_copy(update={
+            "resume_token": None, "idempotency_key": idempotency_key,
+            "frozen_fields": frozen_fields,
+        }),
+        approval=approval, assessment=assessment,
+        resume_token_digest=hashlib.sha256(resume_token.encode()).hexdigest(),
+        idempotency_key=idempotency_key, frozen_fields=frozen_fields,
+    )
 
 
 class WorkflowResumer:
@@ -169,13 +123,17 @@ class WorkflowResumer:
     def __init__(
         self,
         *,
-        store: CheckpointStore,
+        store: ApprovalStore,
         policy_service: AfterSalePolicyService,
         agent_version: str,
+        resume_graph: Callable[[ChatResumeRequest, ApprovalSnapshot], ChatResumeResponse],
+        execution: Callable[[str], ContextManager[None]],
     ) -> None:
         self._store = store
         self._policy_service = policy_service
         self._agent_version = agent_version
+        self._resume_graph = resume_graph
+        self._execution = execution
 
     def _response(
         self,
@@ -184,7 +142,7 @@ class WorkflowResumer:
         status: str,
         answer: str,
         result: ResumeResult,
-        checkpoint: WorkflowCheckpoint | None = None,
+        checkpoint: ApprovalSnapshot | None = None,
         workflow: WorkflowSummary | None = None,
         approval: ApprovalRequest | None = None,
         business_recheck: dict[str, Any] | None = None,
@@ -224,7 +182,7 @@ class WorkflowResumer:
         request: ChatResumeRequest,
         reason: str,
         *,
-        checkpoint: WorkflowCheckpoint | None = None,
+        checkpoint: ApprovalSnapshot | None = None,
         business_recheck: dict[str, Any] | None = None,
     ) -> ChatResumeResponse:
         return self._response(
@@ -242,7 +200,7 @@ class WorkflowResumer:
 
     def _recheck(
         self,
-        checkpoint: WorkflowCheckpoint,
+        checkpoint: ApprovalSnapshot,
     ) -> dict[str, Any]:
         order_id = str(checkpoint.frozen_fields.get("order_id") or "")
         request = ChatRequest(
@@ -285,34 +243,43 @@ class WorkflowResumer:
         }
 
     def resume(self, request: ChatResumeRequest) -> ChatResumeResponse:
-        checkpoint = self._store.get(request.session_id, request.workflow_id)
-        if checkpoint is None:
-            return self._blocked(request, "没有找到匹配会话与工作流的 checkpoint。")
-        if not hmac.compare_digest(request.resume_token, checkpoint.resume_token):
-            return self._blocked(
-                request,
-                "resume_token 不匹配，不能恢复这个审批流程。",
-                checkpoint=checkpoint,
-            )
-        if not request.reviewer_id.strip():
-            return self._blocked(
-                request,
-                "缺少可信审批人标识。",
-                checkpoint=checkpoint,
-            )
-        if request.reviewer_role != checkpoint.approval.required_role:
-            return self._blocked(
-                request,
-                "只有售后主管角色可以恢复高风险审批。",
-                checkpoint=checkpoint,
-            )
+        """Validate before entering the graph; serialize check+resume per instance."""
+        try:
+            with self._execution(request.workflow_id):
+                checkpoint = self._store.get(request.session_id, request.workflow_id)
+                if checkpoint is None:
+                    return self._blocked(request, "没有找到匹配会话与工作流的 checkpoint。")
+                digest = hashlib.sha256(request.resume_token.encode()).hexdigest()
+                if not hmac.compare_digest(digest, checkpoint.resume_token_digest):
+                    return self._blocked(request, "resume_token 不匹配，不能恢复这个审批流程。")
+                if not request.reviewer_id.strip():
+                    return self._blocked(request, "缺少可信审批人标识。")
+                if request.reviewer_role != checkpoint.approval.required_role:
+                    return self._blocked(request, "只有售后主管角色可以恢复高风险审批。")
+                note, _, _ = HookManager().sanitize(request.reviewer_note)
+                request = request.model_copy(update={"reviewer_note": note})
+                saved, terminal, _ = self._store.outcome(request.workflow_id)
+                if terminal:
+                    if saved is None or request.decision != saved.resume_result.decision:
+                        return self._blocked(request, "审批流程已结束，不能提交冲突决策。", checkpoint=checkpoint)
+                    replay = saved.model_copy(deep=True)
+                    replay.resume_result.idempotent_replay = True
+                    replay.session_state["resume_result"] = replay.resume_result.model_dump()
+                    return replay
+                return self._resume_graph(request, checkpoint)
+        except (sqlite3.Error, ValueError) as exc:
+            raise RuntimeError("售后恢复存储不可用或记录格式无效。") from exc
 
+    def resolve_without_submission(
+        self, request: ChatResumeRequest, checkpoint: ApprovalSnapshot,
+    ) -> ChatResumeResponse:
+        """Run inside the resumed graph, not as a detached business resume."""
         if request.decision == "rejected":
             workflow = checkpoint.workflow.model_copy(
                 update={"status": "rejected", "pending_action": "notify_user"}
             )
             approval = checkpoint.approval.model_copy(update={"status": "rejected"})
-            return self._response(
+            response = self._response(
                 request,
                 status="rejected",
                 answer="售后主管已拒绝该申请，系统不会提交业务动作。",
@@ -328,6 +295,7 @@ class WorkflowResumer:
                     "reason": "rejected_without_submission",
                 },
             )
+            return response
 
         if request.decision == "needs_more_info":
             workflow = checkpoint.workflow.model_copy(
@@ -336,7 +304,7 @@ class WorkflowResumer:
             approval = checkpoint.approval.model_copy(
                 update={"status": "needs_more_info"}
             )
-            return self._response(
+            response = self._response(
                 request,
                 status="paused",
                 answer="售后主管要求补充信息，当前不会记录业务申请。",
@@ -352,13 +320,17 @@ class WorkflowResumer:
                     "reason": "needs_more_info_without_submission",
                 },
             )
+            return response
+        raise RuntimeError("该审批决策必须进入业务复查节点。")
 
-        recheck = self._recheck(checkpoint)
+    def blocked_recheck(
+        self, request: ChatResumeRequest, checkpoint: ApprovalSnapshot, recheck: dict[str, Any],
+    ) -> ChatResumeResponse:
         if not recheck["passed"]:
             workflow = checkpoint.workflow.model_copy(
                 update={"status": "blocked", "pending_action": "transfer_to_human"}
             )
-            return self._response(
+            response = self._response(
                 request,
                 status="blocked",
                 answer="恢复时业务事实已经变化，请人工重新核验。",
@@ -371,10 +343,13 @@ class WorkflowResumer:
                 ),
                 business_recheck=recheck,
             )
+            return response
+        raise RuntimeError("业务复查已通过，不应走阻断分支。")
 
-        request_id, replay = self._store.record_submission(
-            checkpoint.idempotency_key
-        )
+    def approved_response(
+        self, request: ChatResumeRequest, checkpoint: ApprovalSnapshot,
+        recheck: dict[str, Any], request_id: str, replay: bool,
+    ) -> ChatResumeResponse:
         workflow = checkpoint.workflow.model_copy(
             update={"status": "completed", "pending_action": "notify_user"}
         )

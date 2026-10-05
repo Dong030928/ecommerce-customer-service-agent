@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 售后工作流接入 LangGraph 原生 Checkpointer、`interrupt()` 与 `Command(resume=...)`，由原图处理人工审批后的拒绝、待补充、事实复查及模拟提交。
+- HTTP 服务默认使用 SQLite 分开持久化图快照与业务审批记录；申请实例独立，跨重启恢复不依赖会话内存。
+- 审批终态与模拟申请防重结果持久化；同线程恢复串行化、冲突终态阻断，模拟提交与最终结果通过业务短事务一起保存。
+- 将 HookManager 等运行时依赖移出持久化 State，增加资源生命周期、子进程重启、并发审批与故障重放测试；更新 README 和架构图。未接入真实身份认证或支付退款。
 - 使用 LangChain DocumentLoader 接入 Markdown、TXT、文字版 PDF 和普通 DOCX；保留现有 Markdown 的 frontmatter、章节、关键词及稳定 chunk ID。
 - 非 Markdown 知识文件须提供显式的政策元数据清单，PDF 引用保留页码；无文本、缺清单和重复 ID 等情况阻断索引构建。
 - Loader 接入阶段保持原切块与检索算法不变，并新增真实格式的离线解析与缓存版本回归测试。

@@ -111,8 +111,8 @@ class LangGraphWorkflowTests(unittest.TestCase):
         self.assertTrue(response.workflow.used_langgraph)
         self.assertEqual(response.workflow.workflow_type, "unshipped_refund")
         self.assertEqual(response.workflow.status, "paused")
-        self.assertEqual(response.workflow.node_history, FULL_NODE_HISTORY)
-        self.assertEqual(response.workflow.current_node, "stop_before_submission")
+        self.assertEqual(response.workflow.node_history, [*FULL_NODE_HISTORY, "prepare_approval", "human_review"])
+        self.assertEqual(response.workflow.current_node, "human_review")
         self.assertEqual(
             response.workflow.pending_action,
             "require_human_approval",

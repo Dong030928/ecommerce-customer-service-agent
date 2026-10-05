@@ -91,6 +91,7 @@ from tools.planning import (
 from tools.runtime_context import public_runtime_context
 from tools.tool_calling import ToolCallingOutcome, ToolCallingService
 from workflows.after_sale_workflow import AfterSaleWorkflow
+from state.native_checkpoint import WorkflowPersistence
 
 
 def first_matched_keywords(message: str, keywords: list[str]) -> list[str]:
@@ -437,6 +438,7 @@ class CustomerServiceAgent:
         clarification_model_name: str | None = None,
         task_planner: TaskPlanner | None = None,
         after_sale_policy_service: AfterSalePolicyService | None = None,
+        workflow_persistence: WorkflowPersistence | None = None,
     ) -> None:
         self._message_count_by_session: dict[str, int] = {}
         self._cost_events_by_session: dict[str, list[dict]] = {}
@@ -471,7 +473,12 @@ class CustomerServiceAgent:
         self._after_sale_workflow = AfterSaleWorkflow(
             policy_service=self._after_sale_policy_service,
             policy_retriever=self._retrieve_after_sale_policy,
+            persistence=workflow_persistence,
         )
+
+    def close(self) -> None:
+        """Release workflow storage; the HTTP app owns this agent's lifecycle."""
+        self._after_sale_workflow.persistence.close()
 
     @staticmethod
     def _intent_result_from_route_plan(

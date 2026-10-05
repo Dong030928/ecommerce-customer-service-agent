@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+import secrets
+import sqlite3
 from typing import Any, Callable, TypedDict
+from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
 
 from api.schemas import (
     AfterSaleWorkflowType,
     ApprovalRequest,
     ChatRequest,
+    ChatResumeRequest,
+    ChatResumeResponse,
     Citation,
     HighRiskActionType,
     HighRiskAssessment,
@@ -25,7 +32,9 @@ from policies.after_sale_policy import (
     clarification_assessment,
     detect_high_risk_action,
 )
-from state.checkpoints import CheckpointStore, WorkflowResumer
+from state.approval_store import decision_fingerprint
+from state.checkpoints import ApprovalSnapshot, WorkflowResumer, build_approval_snapshot
+from state.native_checkpoint import WorkflowPersistence
 from tools.planning import extract_order_id
 from tools.runtime_context import contextual_order_id
 
@@ -39,18 +48,19 @@ PolicyRetriever = Callable[
 class AfterSaleWorkflowState(TypedDict, total=False):
     """Internal graph state; only WorkflowSummary crosses the public boundary."""
 
-    request: ChatRequest
-    intent_result: IntentResult
-    hooks: HookManager
+    schema_version: int
+    request: dict[str, Any]
+    intent_result: dict[str, Any]
     workflow_id: str
     workflow_type: AfterSaleWorkflowType
     action_type: HighRiskActionType
     order_id: str | None
-    citations: list[Citation]
+    citations: list[dict[str, Any]]
     policy_state: dict[str, Any]
-    tool_calls: list[ToolCallRecord]
-    assessment: HighRiskAssessment | None
-    approval: ApprovalRequest | None
+    tool_calls: list[dict[str, Any]]
+    assessment: dict[str, Any] | None
+    approval: dict[str, Any] | None
+    resume_seed: str
     resume_token: str | None
     idempotency_key: str | None
     frozen_fields: dict[str, Any]
@@ -60,27 +70,65 @@ class AfterSaleWorkflowState(TypedDict, total=False):
     node_history: list[str]
     answer: str
     used_langgraph: bool
+    review: dict[str, Any]
+    business_recheck: dict[str, Any]
+    resume_response: dict[str, Any]
 
 
 class AfterSaleWorkflow:
-    """Run a fixed evidence workflow and stop before every write operation."""
+    """Run evidence and native approval nodes; never write to external business APIs."""
 
     def __init__(
         self,
         *,
         policy_service: AfterSalePolicyService,
         policy_retriever: PolicyRetriever,
-        checkpoint_store: CheckpointStore | None = None,
+        persistence: WorkflowPersistence | None = None,
     ) -> None:
         self._policy_service = policy_service
         self._policy_retriever = policy_retriever
-        self._checkpoint_store = checkpoint_store or CheckpointStore()
+        self.persistence = persistence or WorkflowPersistence.memory()
+        self._store = self.persistence.approvals
+        self._hook_context: ContextVar[HookManager | None] = ContextVar(
+            "after_sale_request_hooks", default=None,
+        )
         self._resumer = WorkflowResumer(
-            store=self._checkpoint_store,
+            store=self._store,
             policy_service=policy_service,
             agent_version="0.35.0",
+            resume_graph=self._resume_graph,
+            execution=self.persistence.execution,
         )
         self.graph = self._build_graph()
+
+    @staticmethod
+    def _request(state: AfterSaleWorkflowState) -> ChatRequest:
+        return ChatRequest.model_validate(state["request"])
+
+    def _hooks(self) -> HookManager:
+        return self._hook_context.get() or HookManager()
+
+    @staticmethod
+    def _calls(state: AfterSaleWorkflowState) -> list[ToolCallRecord]:
+        return [ToolCallRecord.model_validate(item) for item in state.get("tool_calls", [])]
+
+    @staticmethod
+    def _config(thread_id: str) -> dict[str, Any]:
+        return {"configurable": {"thread_id": thread_id}}
+
+    @staticmethod
+    def _hydrate(state: dict[str, Any]) -> dict[str, Any]:
+        """Project primitive graph state back into existing typed Agent responses."""
+        result = dict(state)
+        for name, model in (("assessment", HighRiskAssessment), ("approval", ApprovalRequest)):
+            if result.get(name) is not None:
+                result[name] = model.model_validate(result[name])
+        result["citations"] = [Citation.model_validate(item) for item in result.get("citations", [])]
+        result["tool_calls"] = [ToolCallRecord.model_validate(item) for item in result.get("tool_calls", [])]
+        if result.get("__interrupt__"):
+            result["current_node"] = "human_review"
+            result["node_history"] = [*result.get("node_history", []), "human_review"]
+        return result
 
     def run(
         self,
@@ -92,12 +140,11 @@ class AfterSaleWorkflow:
 
         order_id = extract_order_id(request.user_message) or contextual_order_id(request)
         action_type = detect_high_risk_action(request.user_message)
-        workflow_id = f"wf-{request.session_id}-{order_id or 'missing'}"
+        workflow_id = f"wf-{uuid4().hex}"
         if is_chat_approval_claim(request.user_message):
             return {
                 "request": request,
                 "intent_result": intent_result,
-                "hooks": hooks,
                 "workflow_id": workflow_id,
                 "workflow_type": "unknown",
                 "action_type": action_type,
@@ -135,9 +182,11 @@ class AfterSaleWorkflow:
                 "used_langgraph": False,
             }
         initial_state: AfterSaleWorkflowState = {
-            "request": request,
-            "intent_result": intent_result,
-            "hooks": hooks,
+            "schema_version": 1,
+            "request": request.model_dump(mode="json", include={
+                "session_id", "runtime_user_id", "user_message",
+            }),
+            "intent_result": intent_result.model_dump(mode="json"),
             "workflow_id": workflow_id,
             "workflow_type": "unknown",
             "action_type": action_type,
@@ -152,6 +201,7 @@ class AfterSaleWorkflow:
             "assessment": None,
             "approval": None,
             "resume_token": None,
+            "resume_seed": secrets.token_urlsafe(32),
             "idempotency_key": None,
             "frozen_fields": {},
             "status": "running",
@@ -161,34 +211,51 @@ class AfterSaleWorkflow:
             "answer": "",
             "used_langgraph": True,
         }
-        result = self.graph.invoke(initial_state)
-        approval = result.get("approval")
-        assessment = result.get("assessment")
-        if (
-            approval is not None
-            and assessment is not None
-            and result.get("status") == "paused"
-        ):
-            checkpoint = self._checkpoint_store.create(
-                request=request,
-                workflow=self.summary(result),
-                approval=approval,
-                assessment=assessment,
-                tool_calls=result.get("tool_calls", []),
-            )
-            result.update(
-                {
-                    "resume_token": checkpoint.resume_token,
-                    "idempotency_key": checkpoint.idempotency_key,
-                    "frozen_fields": checkpoint.frozen_fields,
-                }
-            )
-        return result
+        token = self._hook_context.set(hooks)
+        try:
+            with self.persistence.execution(workflow_id):
+                result = self.graph.invoke(initial_state, self._config(workflow_id), durability="sync")
+            return self._hydrate(result)
+        except sqlite3.Error as exc:
+            raise RuntimeError("售后工作流状态保存失败。") from exc
+        finally:
+            self._hook_context.reset(token)
 
     def resume(self, request: "ChatResumeRequest") -> "ChatResumeResponse":
         """Resume a paused approval only through the dedicated protocol."""
 
         return self._resumer.resume(request)
+
+    def _resume_graph(self, request: ChatResumeRequest,
+                      checkpoint: ApprovalSnapshot) -> ChatResumeResponse:
+        config = self._config(checkpoint.thread_id)
+        snapshot = self.graph.get_state(config)
+        if not snapshot.values or snapshot.values.get("schema_version") != 1:
+            return self._resumer._blocked(request, "原生图快照缺失或 Schema 版本不受支持。")
+        saved, _, fingerprint = self._store.outcome(request.workflow_id)
+        if snapshot.interrupts:
+            if saved is not None and fingerprint == decision_fingerprint(request):
+                replay = saved.model_copy(deep=True)
+                replay.resume_result.idempotent_replay = True
+                replay.session_state["resume_result"] = replay.resume_result.model_dump()
+                return replay
+            graph_input = Command(resume=request.model_dump(mode="json", exclude={"resume_token"}))
+        elif snapshot.next and snapshot.values.get("review"):
+            previous = self._review_request(snapshot.values)
+            if decision_fingerprint(previous) != decision_fingerprint(request):
+                return self._resumer._blocked(request, "上次审批恢复尚未完成，请以原请求重试。")
+            graph_input = None  # Retry an already persisted graph decision, never approve anew.
+        else:
+            return self._resumer._blocked(request, "原生图没有可恢复的审批中断。")
+        token = self._hook_context.set(HookManager())
+        try:
+            result = self.graph.invoke(graph_input, config, durability="sync")
+        finally:
+            self._hook_context.reset(token)
+        payload = result.get("resume_response")
+        if not payload:
+            raise RuntimeError("售后工作流恢复后没有形成有效结果。")
+        return ChatResumeResponse.model_validate(payload)
 
     def _build_graph(self):
         graph = StateGraph(AfterSaleWorkflowState)
@@ -201,6 +268,11 @@ class AfterSaleWorkflow:
         graph.add_node("retrieve_policy", self._retrieve_policy)
         graph.add_node("check_eligibility", self._check_eligibility)
         graph.add_node("stop_before_submission", self._stop_before_submission)
+        graph.add_node("prepare_approval", self._prepare_approval)
+        graph.add_node("human_review", self._human_review)
+        graph.add_node("resolve_review", self._resolve_review)
+        graph.add_node("recheck_business", self._recheck_business)
+        graph.add_node("submit_application", self._submit_application)
         graph.set_entry_point("classify_after_sale_intent")
         graph.add_conditional_edges(
             "classify_after_sale_intent",
@@ -221,8 +293,17 @@ class AfterSaleWorkflow:
         graph.add_edge("load_logistics", "retrieve_policy")
         graph.add_edge("retrieve_policy", "check_eligibility")
         graph.add_edge("check_eligibility", "stop_before_submission")
-        graph.add_edge("stop_before_submission", END)
-        return graph.compile()
+        graph.add_conditional_edges("stop_before_submission", lambda state:
+            "prepare_approval" if state.get("approval") else END)
+        graph.add_edge("prepare_approval", "human_review")
+        graph.add_conditional_edges("human_review", lambda state:
+            "recheck_business" if state["review"]["decision"] == "approved" else "resolve_review")
+        graph.add_conditional_edges("resolve_review", lambda state:
+            "human_review" if state["status"] == "paused" else END)
+        graph.add_conditional_edges("recheck_business", lambda state:
+            "submit_application" if state["business_recheck"]["passed"] else END)
+        graph.add_edge("submit_application", END)
+        return graph.compile(checkpointer=self.persistence.checkpointer)
 
     def _classify_after_sale_intent(
         self,
@@ -244,11 +325,11 @@ class AfterSaleWorkflow:
     def _load_order(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
         record = self._policy_service.read_order(
             str(state["order_id"]),
-            state["request"],
-            state["hooks"],
+            self._request(state),
+            self._hooks(),
         )
         updates: dict[str, Any] = {
-            "tool_calls": [*state["tool_calls"], record],
+            "tool_calls": [*state["tool_calls"], record.model_dump(mode="json")],
         }
         if record.observation.status != "success":
             updates.update(
@@ -263,28 +344,28 @@ class AfterSaleWorkflow:
     def _load_logistics(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
         record = self._policy_service.read_logistics(
             str(state["order_id"]),
-            state["request"],
-            state["hooks"],
+            self._request(state),
+            self._hooks(),
         )
         return self._complete(
             state,
             "load_logistics",
-            {"tool_calls": [*state["tool_calls"], record]},
+            {"tool_calls": [*state["tool_calls"], record.model_dump(mode="json")]},
         )
 
     def _retrieve_policy(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
         citations, policy_state = self._policy_retriever(
-            state["request"],
-            state["intent_result"],
+            self._request(state),
+            IntentResult.model_validate(state["intent_result"]),
         )
         return self._complete(
             state,
             "retrieve_policy",
-            {"citations": citations, "policy_state": policy_state},
+            {"citations": [item.model_dump(mode="json") for item in citations], "policy_state": policy_state},
         )
 
     def _check_eligibility(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
-        calls = state["tool_calls"]
+        calls = self._calls(state)
         order_call = next(
             (item for item in calls if item.action.tool_name == "get_order_status"),
             None,
@@ -300,15 +381,15 @@ class AfterSaleWorkflow:
         assessment = self._policy_service.assess_from_evidence(
             order_id=str(state["order_id"]),
             action_type=state["action_type"],
-            policy_basis=state["citations"],
+            policy_basis=[Citation.model_validate(item) for item in state["citations"]],
             order_call=order_call,
             logistics_call=logistics_call,
-            user_message=state["request"].user_message,
+            user_message=self._request(state).user_message,
         )
         return self._complete(
             state,
             "check_eligibility",
-            {"assessment": assessment},
+            {"assessment": assessment.model_dump(mode="json")},
         )
 
     def _stop_before_submission(
@@ -316,6 +397,8 @@ class AfterSaleWorkflow:
         state: AfterSaleWorkflowState,
     ) -> dict[str, Any]:
         assessment = state.get("assessment")
+        if assessment is not None:
+            assessment = HighRiskAssessment.model_validate(assessment)
         if assessment is None:
             if not state.get("order_id") or state["workflow_type"] == "unknown":
                 assessment = clarification_assessment(state["action_type"])
@@ -323,7 +406,7 @@ class AfterSaleWorkflow:
                 order_call = next(
                     (
                         item
-                        for item in state["tool_calls"]
+                        for item in self._calls(state)
                         if item.action.tool_name == "get_order_status"
                     ),
                     None,
@@ -331,10 +414,10 @@ class AfterSaleWorkflow:
                 assessment = self._policy_service.assess_from_evidence(
                     order_id=str(state["order_id"]),
                     action_type=state["action_type"],
-                    policy_basis=state["citations"],
+                    policy_basis=[Citation.model_validate(item) for item in state["citations"]],
                     order_call=order_call,
                     logistics_call=None,
-                    user_message=state["request"].user_message,
+                    user_message=self._request(state).user_message,
                 )
         status: WorkflowStatus = (
             "blocked"
@@ -364,13 +447,100 @@ class AfterSaleWorkflow:
             state,
             "stop_before_submission",
             {
-                "assessment": assessment,
-                "approval": approval,
+                "assessment": assessment.model_dump(mode="json"),
+                "approval": approval.model_dump(mode="json") if approval else None,
                 "status": status,
                 "pending_action": pending_action,
                 "answer": state.get("answer") or answer,
             },
         )
+
+    def _prepare_approval(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
+        prepared = {**state, **self._complete(state, "prepare_approval")}
+        snapshot = build_approval_snapshot(
+            request=self._request(state), workflow=self.summary(prepared),
+            approval=ApprovalRequest.model_validate(state["approval"]),
+            assessment=HighRiskAssessment.model_validate(state["assessment"]),
+            tool_calls=self._calls(state), resume_token=state["resume_seed"],
+        )
+        self._store.create(snapshot)
+        return self._complete(state, "prepare_approval", {
+            "resume_token": state["resume_seed"], "idempotency_key": snapshot.idempotency_key,
+            "frozen_fields": snapshot.frozen_fields,
+        })
+
+    def _human_review(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
+        review = interrupt({
+            "workflow_id": state["workflow_id"], "approval": state["approval"],
+            "order_id": state["order_id"],
+        })
+        request = ChatResumeRequest.model_validate({**review, "resume_token": state["resume_token"]})
+        if (request.workflow_id != state["workflow_id"]
+                or request.session_id != self._request(state).session_id):
+            raise RuntimeError("审批决策与原生图申请不匹配。")
+        return self._complete(state, "human_review", {
+            "review": request.model_dump(mode="json", exclude={"resume_token"}),
+        })
+
+    @staticmethod
+    def _review_request(state: AfterSaleWorkflowState) -> ChatResumeRequest:
+        return ChatResumeRequest.model_validate({**state["review"], "resume_token": state["resume_token"]})
+
+    def _snapshot(self, state: AfterSaleWorkflowState) -> ApprovalSnapshot:
+        snapshot = self._store.get(self._request(state).session_id, state["workflow_id"])
+        if snapshot is None:
+            raise RuntimeError("审批业务关联记录缺失。")
+        return snapshot
+
+    @staticmethod
+    def _decorate_response(state: AfterSaleWorkflowState, node: str,
+                           response: ChatResumeResponse) -> ChatResumeResponse:
+        history = [*state.get("node_history", []), node]
+        current = node
+        if response.status == "paused":
+            current = "human_review"
+            history.append(current)
+        response.workflow = response.workflow.model_copy(update={
+            "current_node": current, "node_history": history,
+        })
+        response.session_state["workflow"] = response.workflow.model_dump()
+        response.session_state["native_checkpoint"] = True
+        return response
+
+    def _response_updates(self, state: AfterSaleWorkflowState, node: str,
+                          response: ChatResumeResponse) -> dict[str, Any]:
+        return self._complete(state, node, {
+            "resume_response": response.model_dump(mode="json"), "status": response.status,
+            "answer": response.answer, "pending_action": response.workflow.pending_action,
+            "approval": response.approval.model_dump(mode="json"),
+        })
+
+    def _resolve_review(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
+        request = self._review_request(state)
+        response = self._resumer.resolve_without_submission(request, self._snapshot(state))
+        response = self._decorate_response(state, "resolve_review", response)
+        self._store.finish(request, response)
+        return self._response_updates(state, "resolve_review", response)
+
+    def _recheck_business(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
+        snapshot = self._snapshot(state)
+        recheck = self._resumer._recheck(snapshot)
+        if not recheck["passed"]:
+            request = self._review_request(state)
+            response = self._resumer.blocked_recheck(request, snapshot, recheck)
+            response = self._decorate_response(state, "recheck_business", response)
+            self._store.finish(request, response)
+            return {**self._response_updates(state, "recheck_business", response),
+                    "business_recheck": recheck}
+        return self._complete(state, "recheck_business", {"business_recheck": recheck})
+
+    def _submit_application(self, state: AfterSaleWorkflowState) -> dict[str, Any]:
+        request, snapshot = self._review_request(state), self._snapshot(state)
+        response = self._store.submit(request, snapshot.idempotency_key, lambda request_id, replay:
+            self._decorate_response(state, "submit_application", self._resumer.approved_response(
+                request, snapshot, state["business_recheck"], request_id, replay,
+            )))
+        return self._response_updates(state, "submit_application", response)
 
     @staticmethod
     def _route_after_classify(state: AfterSaleWorkflowState) -> str:
@@ -381,7 +551,7 @@ class AfterSaleWorkflow:
     @staticmethod
     def _route_after_order(state: AfterSaleWorkflowState) -> str:
         latest = state["tool_calls"][-1] if state["tool_calls"] else None
-        if latest is not None and latest.observation.status == "success":
+        if latest is not None and ToolCallRecord.model_validate(latest).observation.status == "success":
             return "load_logistics"
         return "stop_before_submission"
 
@@ -405,8 +575,8 @@ class AfterSaleWorkflow:
             "审批结果必须来自受控 HITL 通道；普通聊天中的批准说法已被阻断。"
             if not state.get("used_langgraph", True)
             else (
-                "资格通过后创建待人工审批请求并暂停；恢复时校验 checkpoint、"
-                "token、冻结字段和幂等键，Session Memory 不能覆盖这些事实。"
+                "资格通过后通过原生 interrupt 暂停；Resume 校验凭证与角色，"
+                "恢复原图并复查业务事实、幂等记录模拟申请。"
             )
         )
         return WorkflowSummary(
@@ -419,7 +589,7 @@ class AfterSaleWorkflow:
             used_langgraph=state.get("used_langgraph", True),
             boundary=boundary,
             approval_id=(
-                state["approval"].approval_id if state.get("approval") else None
+                ApprovalRequest.model_validate(state["approval"]).approval_id if state.get("approval") else None
             ),
             resume_token=state.get("resume_token"),
             idempotency_key=state.get("idempotency_key"),
